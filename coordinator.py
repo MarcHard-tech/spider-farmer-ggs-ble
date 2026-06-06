@@ -115,6 +115,49 @@ class GGSData:
     _blower_config: Optional[dict] = field(default=None, repr=False)
     _humidifier_config: Optional[dict] = field(default=None, repr=False)
 
+    # ── Light schedule/PPFD settings ─────────────────────────────────────────
+    light_schedule_brightness: Optional[int] = None
+    light_schedule_start: Optional[int] = None  # seconds since midnight
+    light_schedule_end: Optional[int] = None
+    light_fade_time: Optional[int] = None  # seconds
+    light_ppfd_target: Optional[int] = None
+    light_ppfd_start: Optional[int] = None
+    light_ppfd_end: Optional[int] = None
+    light_ppfd_fade: Optional[int] = None
+    light_dimming_min: Optional[int] = None
+    light_dimming_max: Optional[int] = None
+    light_dim_threshold: Optional[float] = None
+    light_off_threshold: Optional[float] = None
+
+    light2_schedule_brightness: Optional[int] = None
+    light2_schedule_start: Optional[int] = None
+    light2_schedule_end: Optional[int] = None
+    light2_fade_time: Optional[int] = None
+    light2_ppfd_target: Optional[int] = None
+    light2_ppfd_start: Optional[int] = None
+    light2_ppfd_end: Optional[int] = None
+    light2_ppfd_fade: Optional[int] = None
+    light2_dimming_min: Optional[int] = None
+    light2_dimming_max: Optional[int] = None
+    light2_dim_threshold: Optional[float] = None
+    light2_off_threshold: Optional[float] = None
+
+    # ── Fan schedule/cycle settings ──────────────────────────────────────────
+    fan_schedule_start: Optional[int] = None
+    fan_schedule_end: Optional[int] = None
+    fan_cycle_start: Optional[int] = None
+    fan_cycle_run: Optional[int] = None  # seconds
+    fan_cycle_off: Optional[int] = None  # seconds
+    fan_cycle_times: Optional[int] = None
+
+    # ── Blower schedule/cycle settings ───────────────────────────────────────
+    blower_schedule_start: Optional[int] = None
+    blower_schedule_end: Optional[int] = None
+    blower_cycle_start: Optional[int] = None
+    blower_cycle_run: Optional[int] = None
+    blower_cycle_off: Optional[int] = None
+    blower_cycle_times: Optional[int] = None
+
 
 def _get_level(device_dict: dict) -> Optional[int]:
     """Get 'level' from a device dict, handling BLE-corrupted key names."""
@@ -408,6 +451,61 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
     # ── Device parsing ────────────────────────────────────────────────────────
 
+    def _parse_light_settings(self, data: dict, module: str, prefix: str) -> None:
+        """Parse schedule/PPFD settings from a light config block."""
+        light = data.get(module, {})
+        if not light:
+            return
+        d = self.data
+
+        # timePeriod (Schedule mode settings)
+        tp = light.get("timePeriod", [])
+        if tp and isinstance(tp, list) and len(tp) > 0:
+            period = tp[0]
+            setattr(d, f"{prefix}_schedule_brightness", period.get("brightness"))
+            setattr(d, f"{prefix}_schedule_start", period.get("startTime"))
+            setattr(d, f"{prefix}_schedule_end", period.get("endTime"))
+            setattr(d, f"{prefix}_fade_time", period.get("fadeTime"))
+
+        # ppfdPeriod (PPFD mode settings)
+        pp = light.get("ppfdPeriod", [])
+        if pp and isinstance(pp, list) and len(pp) > 0:
+            period = pp[0]
+            setattr(d, f"{prefix}_ppfd_target", period.get("brightness"))
+            setattr(d, f"{prefix}_ppfd_start", period.get("startTime"))
+            setattr(d, f"{prefix}_ppfd_end", period.get("endTime"))
+            setattr(d, f"{prefix}_ppfd_fade", period.get("fadeTime"))
+
+        # Dimming range
+        setattr(d, f"{prefix}_dimming_min", light.get("ppfdMinBrightness"))
+        setattr(d, f"{prefix}_dimming_max", light.get("ppfdMaxBrightness"))
+
+        # Temperature protection
+        setattr(d, f"{prefix}_dim_threshold", light.get("darkTemp"))
+        setattr(d, f"{prefix}_off_threshold", light.get("offTemp"))
+
+    def _parse_fan_settings(self, data: dict, module: str, prefix: str) -> None:
+        """Parse schedule/cycle settings from a fan/blower config block."""
+        device = data.get(module, {})
+        if not device:
+            return
+        d = self.data
+
+        # timePeriod (Schedule mode)
+        tp = device.get("timePeriod", [])
+        if tp and isinstance(tp, list) and len(tp) > 0:
+            period = tp[0]
+            setattr(d, f"{prefix}_schedule_start", period.get("startTime"))
+            setattr(d, f"{prefix}_schedule_end", period.get("endTime"))
+
+        # cycleTime (Cycle mode)
+        ct = device.get("cycleTime", {})
+        if ct:
+            setattr(d, f"{prefix}_cycle_start", ct.get("startTime"))
+            setattr(d, f"{prefix}_cycle_run", ct.get("openDur"))
+            setattr(d, f"{prefix}_cycle_off", ct.get("closeDur"))
+            setattr(d, f"{prefix}_cycle_times", ct.get("times"))
+
     def _parse_devices(self, data: dict) -> None:
         # Fan
         fan = data.get("fan", {})
@@ -500,6 +598,11 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.heater_level = level
             if "on" not in heater:
                 self.data.heater_on = level > 0
+
+        self._parse_light_settings(data, "light", "light")
+        self._parse_light_settings(data, "light2", "light2")
+        self._parse_fan_settings(data, "fan", "fan")
+        self._parse_fan_settings(data, "blower", "blower")
 
     # ── Device control commands ───────────────────────────────────────────────
 
