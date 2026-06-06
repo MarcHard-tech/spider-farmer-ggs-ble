@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Spider Farmer GGS Controller",
+        "description": "Enter the Bluetooth MAC address of your GGS controller. You can find it in Settings \u2192 Devices & Services \u2192 Bluetooth.",
+        "data": {
+          "mac_address": "Bluetooth MAC Address"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Spider Farmer GGS Controller found",
+        "description": "Found a Spider Farmer GGS Controller at {mac}. Do you want to add it?"
+      }
+    },
+    "error": {
+      "invalid_mac": "Invalid format. Use XX:XX:XX:XX:XX:XX (e.g. A8:46:74:A7:BC:5A)"
+    },
+    "abort": {
+      "already_configured": "This GGS controller is already configured."
+    }
+  }
+}
