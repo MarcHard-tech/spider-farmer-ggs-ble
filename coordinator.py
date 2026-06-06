@@ -158,6 +158,14 @@ class GGSData:
     blower_cycle_off: Optional[int] = None
     blower_cycle_times: Optional[int] = None
 
+    # ── Humidifier schedule/cycle settings ───────────────────────────────────
+    humidifier_schedule_start: Optional[int] = None
+    humidifier_schedule_end: Optional[int] = None
+    humidifier_cycle_start: Optional[int] = None
+    humidifier_cycle_run: Optional[int] = None
+    humidifier_cycle_off: Optional[int] = None
+    humidifier_cycle_times: Optional[int] = None
+
 
 def _get_level(device_dict: dict) -> Optional[int]:
     """Get 'level' from a device dict, handling BLE-corrupted key names."""
@@ -603,6 +611,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         self._parse_light_settings(data, "light2", "light2")
         self._parse_fan_settings(data, "fan", "fan")
         self._parse_fan_settings(data, "blower", "blower")
+        self._parse_fan_settings(data, "humidifier", "humidifier")
 
     # ── Device control commands ───────────────────────────────────────────────
 
