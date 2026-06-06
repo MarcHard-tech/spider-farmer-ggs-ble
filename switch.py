@@ -73,6 +73,18 @@ SWITCH_DESCRIPTIONS: tuple[GGSSwitchDescription, ...] = (
         turn_on_fn=lambda c: c.async_set_heater(True),
         turn_off_fn=lambda c: c.async_set_heater(False),
     ),
+    GGSSwitchDescription(
+        key="fan_natural_wind",
+        name="Fan Natural Wind",
+        icon="mdi:weather-windy",
+        is_on_fn=lambda d: d.fan_natural,
+        turn_on_fn=lambda c: c.async_send_config_field(
+            "fan", c._build_config_block("fan", {"natural": 1})
+        ),
+        turn_off_fn=lambda c: c.async_send_config_field(
+            "fan", c._build_config_block("fan", {"natural": 0})
+        ),
+    ),
 )
 
 
