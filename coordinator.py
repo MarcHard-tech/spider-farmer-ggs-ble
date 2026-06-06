@@ -93,6 +93,28 @@ class GGSData:
     oplog_dev_type: Optional[int] = None
     oplog_mode_type: Optional[int] = None
 
+    # ── Device mode types ────────────────────────────────────────────────────
+    light_mode: Optional[int] = None
+    light2_mode: Optional[int] = None
+    fan_mode: Optional[int] = None
+    blower_mode: Optional[int] = None
+    humidifier_mode: Optional[int] = None
+
+    # ── Fan/Blower extended settings ─────────────────────────────────────────
+    fan_max_speed: Optional[int] = None
+    fan_min_speed: Optional[int] = None
+    fan_shake_level: Optional[int] = None
+    fan_natural: Optional[bool] = None
+    blower_max_speed: Optional[int] = None
+    blower_min_speed: Optional[int] = None
+
+    # ── Cached config blocks (for building setConfigField payloads) ──────────
+    _light_config: Optional[dict] = field(default=None, repr=False)
+    _light2_config: Optional[dict] = field(default=None, repr=False)
+    _fan_config: Optional[dict] = field(default=None, repr=False)
+    _blower_config: Optional[dict] = field(default=None, repr=False)
+    _humidifier_config: Optional[dict] = field(default=None, repr=False)
+
 
 def _get_level(device_dict: dict) -> Optional[int]:
     """Get 'level' from a device dict, handling BLE-corrupted key names."""
@@ -389,6 +411,8 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     def _parse_devices(self, data: dict) -> None:
         # Fan
         fan = data.get("fan", {})
+        if fan:
+            self.data._fan_config = dict(fan)
         if "on" in fan:
             self.data.fan_on = bool(fan["on"])
         level = _get_level(fan)
@@ -396,9 +420,21 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.fan_level = level
             if "on" not in fan:
                 self.data.fan_on = level > 0
+        if "modeType" in fan:
+            self.data.fan_mode = fan["modeType"]
+        if "maxSpeed" in fan:
+            self.data.fan_max_speed = fan["maxSpeed"]
+        if "minSpeed" in fan:
+            self.data.fan_min_speed = fan["minSpeed"]
+        if "shakeLevel" in fan:
+            self.data.fan_shake_level = fan["shakeLevel"]
+        if "natural" in fan:
+            self.data.fan_natural = bool(fan["natural"])
 
         # Grow light 1
         light = data.get("light", {})
+        if light:
+            self.data._light_config = dict(light)
         if "on" in light:
             self.data.light_on = bool(light["on"])
         level = _get_level(light)
@@ -406,9 +442,13 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.light_level = level
             if "on" not in light:
                 self.data.light_on = level > 0
+        if "modeType" in light:
+            self.data.light_mode = light["modeType"]
 
         # Grow light 2
         light2 = data.get("light2", {})
+        if light2:
+            self.data._light2_config = dict(light2)
         level = _get_level(light2)
         if level is not None:
             self.data.light2_level = level
@@ -416,9 +456,13 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
                 self.data.light2_on = bool(light2["on"])
             else:
                 self.data.light2_on = level > 0
+        if "modeType" in light2:
+            self.data.light2_mode = light2["modeType"]
 
         # Blower
         blower = data.get("blower", {})
+        if blower:
+            self.data._blower_config = dict(blower)
         if "on" in blower:
             self.data.blower_on = bool(blower["on"])
         level = _get_level(blower)
@@ -426,9 +470,17 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.blower_level = level
             if "on" not in blower:
                 self.data.blower_on = level > 0
+        if "modeType" in blower:
+            self.data.blower_mode = blower["modeType"]
+        if "maxSpeed" in blower:
+            self.data.blower_max_speed = blower["maxSpeed"]
+        if "minSpeed" in blower:
+            self.data.blower_min_speed = blower["minSpeed"]
 
         # Humidifier
         humidifier = data.get("humidifier", {})
+        if humidifier:
+            self.data._humidifier_config = dict(humidifier)
         if "on" in humidifier:
             self.data.humidifier_on = bool(humidifier["on"])
         level = _get_level(humidifier)
@@ -436,6 +488,8 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.humidifier_level = level
             if "on" not in humidifier:
                 self.data.humidifier_on = level > 0
+        if "modeType" in humidifier:
+            self.data.humidifier_mode = humidifier["modeType"]
 
         # Heater
         heater = data.get("heater", {})
@@ -453,6 +507,45 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         await self._ensure_connected()
         payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
         await self._client.write_gatt_char(UUID_WRITE, payload, response=True)
+
+    async def async_send_config_field(self, module: str, config: dict) -> None:
+        """Send a setConfigField command to change device mode/settings."""
+        payload = {
+            "method": "setConfigField",
+            "params": {
+                "keyPath": ["device", module],
+                module: config,
+            },
+        }
+        _LOGGER.debug("GGS setConfigField %s: %s", module, json.dumps(config))
+        await self._send_raw(payload)
+        # Wait for controller to process, then poll for updated state
+        await asyncio.sleep(2)
+        await self._send_raw({"method": "getDevSta"})
+        await asyncio.sleep(2)
+        self.async_update_listeners()
+
+    def _build_config_block(self, module: str, overrides: dict) -> dict:
+        """Build a full config block for a module by merging overrides into cached state.
+
+        The controller needs a reasonably complete config block — partial updates
+        work for some fields but not others. We merge our changes into whatever
+        the controller last reported.
+        """
+        cache_map = {
+            "light": self.data._light_config,
+            "light2": self.data._light2_config,
+            "fan": self.data._fan_config,
+            "blower": self.data._blower_config,
+            "humidifier": self.data._humidifier_config,
+        }
+        cached = cache_map.get(module)
+        if cached:
+            block = dict(cached)
+            block.update(overrides)
+        else:
+            block = dict(overrides)
+        return block
 
     async def async_set_fan(self, on: bool, level: Optional[int] = None) -> None:
         cmd: dict = {"on": 1 if on else 0}
