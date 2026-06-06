@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_MAC_ADDRESS, DOMAIN
 from .coordinator import SpiderFarmerGGSCoordinator
 
-PLATFORMS = ["sensor", "switch", "number"]
+PLATFORMS = ["sensor", "switch", "number", "select"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
