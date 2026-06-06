@@ -1,0 +1,198 @@
+set_light_mode:
+  name: Set Light Mode
+  description: Set the mode and settings for a grow light.
+  fields:
+    light:
+      name: Light
+      description: Which light (1 or 2)
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 2
+    mode:
+      name: Mode
+      description: Light mode
+      required: true
+      selector:
+        select:
+          options:
+            - Manual
+            - Schedule
+            - PPFD
+    brightness:
+      name: Brightness
+      description: Brightness level (0-100%)
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    schedule_start:
+      name: Schedule Start
+      description: "Schedule start time (HH:MM)"
+      selector:
+        time:
+    schedule_end:
+      name: Schedule End
+      description: "Schedule end time (HH:MM)"
+      selector:
+        time:
+    ppfd_target:
+      name: PPFD Target
+      description: Target PPFD for PPFD mode
+      selector:
+        number:
+          min: 0
+          max: 1000
+          unit_of_measurement: "µmol/m²/s"
+    fade_minutes:
+      name: Fade Time
+      description: Sunrise/sunset fade time in minutes
+      selector:
+        number:
+          min: 0
+          max: 240
+          unit_of_measurement: min
+    dimming_min:
+      name: Dimming Min
+      description: Minimum dimming percentage
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    dimming_max:
+      name: Dimming Max
+      description: Maximum dimming percentage
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+
+set_fan_mode:
+  name: Set Fan/Blower Mode
+  description: Set the mode and settings for a fan or blower.
+  fields:
+    device:
+      name: Device
+      description: Which device
+      required: true
+      selector:
+        select:
+          options:
+            - fan
+            - blower
+    mode:
+      name: Mode
+      description: Device mode
+      required: true
+      selector:
+        select:
+          options:
+            - Manual
+            - Schedule
+            - Cycle
+            - "Environment: Temperature only"
+            - "Environment: Humidity only"
+            - "Environment: Prioritize temperature"
+            - "Environment: Prioritize humidity"
+            - "Environment: Temperature & humidity"
+    speed:
+      name: Speed
+      description: Active speed (1-10 for fan, 1-100 for blower)
+      selector:
+        number:
+          min: 1
+          max: 100
+    standby_speed:
+      name: Standby Speed
+      description: Standby speed (0=off)
+      selector:
+        number:
+          min: 0
+          max: 100
+    schedule_start:
+      name: Schedule Start
+      description: "Schedule start time (HH:MM)"
+      selector:
+        time:
+    schedule_end:
+      name: Schedule End
+      description: "Schedule end time (HH:MM)"
+      selector:
+        time:
+    cycle_run_minutes:
+      name: Cycle Run Time
+      description: Cycle on-time in minutes
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+    cycle_off_minutes:
+      name: Cycle Off Time
+      description: Cycle off-time in minutes
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+    cycle_times:
+      name: Cycle Count
+      description: Number of cycles per day
+      selector:
+        number:
+          min: 1
+          max: 100
+
+set_humidifier_mode:
+  name: Set Humidifier Mode
+  description: Set the mode and settings for the humidifier.
+  fields:
+    mode:
+      name: Mode
+      description: Humidifier mode
+      required: true
+      selector:
+        select:
+          options:
+            - Manual
+            - Time Slot
+            - Cycle
+            - Humidity
+    schedule_start:
+      name: Time Slot Start
+      description: "Start time (HH:MM)"
+      selector:
+        time:
+    schedule_end:
+      name: Time Slot End
+      description: "End time (HH:MM)"
+      selector:
+        time:
+    cycle_run_minutes:
+      name: Cycle Run Time
+      description: Cycle on-time in minutes
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+    cycle_off_minutes:
+      name: Cycle Off Time
+      description: Cycle off-time in minutes
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+    cycle_times:
+      name: Cycle Count
+      description: Number of cycles per day
+      selector:
+        number:
+          min: 1
+          max: 100
