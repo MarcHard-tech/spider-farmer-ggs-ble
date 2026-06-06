@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import plan_storage
 from .const import DOMAIN
 from .coordinator import GGSData, SpiderFarmerGGSCoordinator
 
@@ -221,6 +222,101 @@ EVENT_SENSORS: tuple[GGSSensorDescription, ...] = (
     ),
 )
 
+# ── Plan environment target sensors ──────────────────────────────────────────
+
+def _get_active_plan_field(*keys):
+    """Create a value_fn that reads a nested field from the active plan."""
+    def getter(d):
+        name = plan_storage.get_active_plan_name()
+        if not name:
+            return None
+        plan = plan_storage.get_plan(name)
+        if not plan:
+            return None
+        val = plan
+        for key in keys:
+            if isinstance(val, dict):
+                val = val.get(key)
+            else:
+                return None
+        return val
+    return getter
+
+
+PLAN_TARGET_SENSORS: tuple[GGSSensorDescription, ...] = (
+    GGSSensorDescription(
+        key="active_plan_name",
+        name="Active Plan",
+        icon="mdi:sprout",
+        value_fn=lambda d: plan_storage.get_active_plan_name() or "None",
+    ),
+    GGSSensorDescription(
+        key="plan_temp_day",
+        name="Day Temperature Target",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer",
+        value_fn=_get_active_plan_field("temperature", "day"),
+    ),
+    GGSSensorDescription(
+        key="plan_temp_night",
+        name="Night Temperature Target",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        icon="mdi:thermometer",
+        value_fn=_get_active_plan_field("temperature", "night"),
+    ),
+    GGSSensorDescription(
+        key="plan_temp_deadzone",
+        name="Temperature Dead Zone",
+        native_unit_of_measurement="°C",
+        icon="mdi:thermometer-lines",
+        value_fn=_get_active_plan_field("temperature", "dead_zone"),
+    ),
+    GGSSensorDescription(
+        key="plan_humidity_day",
+        name="Day Humidity Target",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:water-percent",
+        value_fn=_get_active_plan_field("humidity", "day"),
+    ),
+    GGSSensorDescription(
+        key="plan_humidity_night",
+        name="Night Humidity Target",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:water-percent",
+        value_fn=_get_active_plan_field("humidity", "night"),
+    ),
+    GGSSensorDescription(
+        key="plan_humidity_deadzone",
+        name="Humidity Dead Zone",
+        native_unit_of_measurement="%",
+        icon="mdi:water-percent",
+        value_fn=_get_active_plan_field("humidity", "dead_zone"),
+    ),
+    GGSSensorDescription(
+        key="plan_co2_day",
+        name="CO2 Day Target",
+        native_unit_of_measurement="ppm",
+        icon="mdi:molecule-co2",
+        value_fn=_get_active_plan_field("co2", "day"),
+    ),
+    GGSSensorDescription(
+        key="plan_co2_night",
+        name="CO2 Night Target",
+        native_unit_of_measurement="ppm",
+        icon="mdi:molecule-co2",
+        value_fn=_get_active_plan_field("co2", "night"),
+    ),
+    GGSSensorDescription(
+        key="plan_co2_deadzone",
+        name="CO2 Dead Zone",
+        native_unit_of_measurement="ppm",
+        icon="mdi:molecule-co2",
+        value_fn=_get_active_plan_field("co2", "dead_zone"),
+    ),
+)
+
 # ── All sensor descriptions combined ─────────────────────────────────────────
 
 SENSOR_DESCRIPTIONS: tuple[GGSSensorDescription, ...] = (
@@ -229,6 +325,7 @@ SENSOR_DESCRIPTIONS: tuple[GGSSensorDescription, ...] = (
     *SOIL_AVG_SENSORS,
     *PLAN_SENSORS,
     *EVENT_SENSORS,
+    *PLAN_TARGET_SENSORS,
 )
 
 
