@@ -1,10 +1,12 @@
 """Service handlers for Spider Farmer GGS Controller."""
 from __future__ import annotations
 
+import functools
+import json
 import logging
 from datetime import time as dt_time
 
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 
 from .const import DOMAIN, FAN_MODES, HUMIDIFIER_MODES, LIGHT_MODES
 from .coordinator import SpiderFarmerGGSCoordinator
@@ -298,37 +300,71 @@ async def async_handle_deactivate_plan(hass: HomeAssistant, call: ServiceCall) -
     _LOGGER.info("Deactivated planting plan")
 
 
+async def async_handle_send_raw_command(
+    hass: HomeAssistant, call: ServiceCall
+) -> dict:
+    """Send an arbitrary JSON command to the controller and return the replies.
+
+    A diagnostic tool for working out protocol commands the integration does not
+    support yet. It writes straight to the device, so a malformed command can
+    change settings — read before writing.
+    """
+    coordinator = _get_coordinator(hass)
+    raw = call.data["command"]
+    try:
+        command = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"command must be a JSON object: {exc}") from exc
+    if not isinstance(command, dict):
+        raise ValueError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
+
+    wait = float(call.data.get("wait", 3))
+    _LOGGER.warning("GGS send_raw_command: %s", json.dumps(command))
+    replies = await coordinator.async_probe(command, wait)
+    _LOGGER.warning(
+        "GGS send_raw_command got %d repl%s: %s",
+        len(replies), "y" if len(replies) == 1 else "ies",
+        json.dumps(replies)[:2000],
+    )
+    return {"count": len(replies), "replies": replies}
+
+
 def async_register_services(hass: HomeAssistant) -> None:
     """Register all spider_farmer_ggs services."""
     hass.services.async_register(
+        DOMAIN, "send_raw_command",
+        functools.partial(async_handle_send_raw_command, hass),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
         DOMAIN, "set_light_mode",
-        lambda call: async_handle_set_light_mode(hass, call),
+        functools.partial(async_handle_set_light_mode, hass),
     )
     hass.services.async_register(
         DOMAIN, "set_fan_mode",
-        lambda call: async_handle_set_fan_mode(hass, call),
+        functools.partial(async_handle_set_fan_mode, hass),
     )
     hass.services.async_register(
         DOMAIN, "set_humidifier_mode",
-        lambda call: async_handle_set_humidifier_mode(hass, call),
+        functools.partial(async_handle_set_humidifier_mode, hass),
     )
     hass.services.async_register(
         DOMAIN, "create_plan",
-        lambda call: async_handle_create_plan(hass, call),
+        functools.partial(async_handle_create_plan, hass),
     )
     hass.services.async_register(
         DOMAIN, "update_plan",
-        lambda call: async_handle_update_plan(hass, call),
+        functools.partial(async_handle_update_plan, hass),
     )
     hass.services.async_register(
         DOMAIN, "delete_plan",
-        lambda call: async_handle_delete_plan(hass, call),
+        functools.partial(async_handle_delete_plan, hass),
     )
     hass.services.async_register(
         DOMAIN, "activate_plan",
-        lambda call: async_handle_activate_plan(hass, call),
+        functools.partial(async_handle_activate_plan, hass),
     )
     hass.services.async_register(
         DOMAIN, "deactivate_plan",
-        lambda call: async_handle_deactivate_plan(hass, call),
+        functools.partial(async_handle_deactivate_plan, hass),
     )

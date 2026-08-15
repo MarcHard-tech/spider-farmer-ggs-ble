@@ -10,6 +10,13 @@
   "config_flow": true,
   "bluetooth": [
     {
+      "service_uuid": "000000ff-0000-1000-8000-00805f9b34fb"
+    },
+    {
+      "manufacturer_id": 65535,
+      "manufacturer_data_start": [236, 3]
+    },
+    {
       "local_name": "SF-GGS-CB"
     }
   ]

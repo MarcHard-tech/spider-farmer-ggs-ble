@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -20,6 +21,16 @@ from .const import DOMAIN, UUID_NOTIFY, UUID_WRITE
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=30)
+
+# How long to wait for a BLE connection before giving up. Must stay well under
+# Home Assistant's config entry setup timeout: if setup is still blocked when
+# that fires, the CancelledError escapes `except Exception` (it is a
+# BaseException) and the entry lands in setup_error, which never retries.
+CONNECT_TIMEOUT = 30
+
+# Commands sent on every poll, overridable at runtime without a restart.
+POLL_COMMANDS_FILE = os.path.join(os.path.dirname(__file__), "poll_commands.json")
+DEFAULT_POLL_COMMANDS = [{"method": "getDevSta"}]
 
 
 @dataclass
@@ -84,12 +95,12 @@ class GGSData:
     heater_level: Optional[int] = None
 
     # ── Last alarm ──────────────────────────────────────────────────────────────
-    alarm_time: Optional[str] = None
+    alarm_time: Optional[datetime] = None
     alarm_type: Optional[int] = None
     alarm_dev_type: Optional[int] = None
 
     # ── Last operation log ──────────────────────────────────────────────────────
-    oplog_time: Optional[str] = None
+    oplog_time: Optional[datetime] = None
     oplog_dev_type: Optional[int] = None
     oplog_mode_type: Optional[int] = None
 
@@ -177,9 +188,27 @@ def _get_level(device_dict: dict) -> Optional[int]:
     return None
 
 
-def _epoch_to_iso(epoch: int) -> str:
-    """Convert a Unix epoch to an ISO 8601 UTC string."""
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+def _epoch_to_dt(epoch: int) -> datetime:
+    """Convert a Unix epoch to a timezone-aware datetime object."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+# Keys that only ever appear in a full config block (from getConfigField), never
+# in the cut-down runtime view getDevSta returns, which is just on/level/modeType.
+_CONFIG_ONLY_KEYS = frozenset({
+    "mLevel", "mOnOff", "timePeriod", "cycleTime",
+    "maxSpeed", "minSpeed", "shakeLevel", "ppfdPeriod",
+})
+
+
+def _is_config_block(block: dict) -> bool:
+    """True if this looks like a full config block rather than runtime state.
+
+    setConfigField writes back whatever is cached, so caching a runtime block
+    would send it as the new config and wipe the module's schedule and cycle
+    settings on the controller. Seen happening 2026-08-16.
+    """
+    return bool(_CONFIG_ONLY_KEYS.intersection(block))
 
 
 class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
@@ -196,6 +225,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         self._client: Optional[BleakClient] = None
         self._raw_packets: list[bytes] = []
         self._logged_full_payload = False
+        self._capture: Optional[list[str]] = None
         self.data = GGSData()
 
     # ── Coordinator lifecycle ─────────────────────────────────────────────────
@@ -203,8 +233,9 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     async def _async_update_data(self) -> GGSData:
         try:
             await self._ensure_connected()
-            await self._send_raw({"method": "getDevSta"})
-            await asyncio.sleep(2)
+            for command in await self._async_poll_commands():
+                await self._send_raw(command)
+                await asyncio.sleep(2)
             return self.data
         except BleakError as exc:
             self._client = None
@@ -212,6 +243,37 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         except Exception as exc:
             self._client = None
             raise UpdateFailed(f"Unexpected error: {exc}") from exc
+
+    async def _async_poll_commands(self) -> list[dict]:
+        """Commands sent on every poll.
+
+        Read from poll_commands.json next to this file so the list can be changed
+        without a restart — an edit takes effect on the next poll. Falls back to
+        getDevSta alone if the file is missing or unreadable.
+        """
+        def _read() -> list[dict]:
+            try:
+                with open(POLL_COMMANDS_FILE, encoding="utf-8") as handle:
+                    commands = json.load(handle)
+            except FileNotFoundError:
+                return list(DEFAULT_POLL_COMMANDS)
+            except (OSError, json.JSONDecodeError) as exc:
+                _LOGGER.warning(
+                    "Spider Farmer GGS: %s unreadable (%s) — using default poll commands",
+                    POLL_COMMANDS_FILE, exc,
+                )
+                return list(DEFAULT_POLL_COMMANDS)
+            if not isinstance(commands, list) or not all(
+                isinstance(c, dict) for c in commands
+            ):
+                _LOGGER.warning(
+                    "Spider Farmer GGS: %s must be a list of command objects — "
+                    "using default poll commands", POLL_COMMANDS_FILE,
+                )
+                return list(DEFAULT_POLL_COMMANDS)
+            return commands or list(DEFAULT_POLL_COMMANDS)
+
+        return await self.hass.async_add_executor_job(_read)
 
     # ── Connection management ─────────────────────────────────────────────────
 
@@ -228,12 +290,26 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
                 "Ensure the controller is powered on and within range."
             )
 
-        self._client = await establish_connection(
-            BleakClientWithServiceCache,
-            ble_device,
-            self.mac_address,
-            disconnected_callback=self._handle_disconnect,
-        )
+        # establish_connection retries internally and can block for minutes when
+        # the controller advertises but will not accept a connection — e.g. the
+        # Spider Farmer app holds its single BLE slot. Cap it so that turns into
+        # a normal retry instead of a setup_error the entry never recovers from.
+        try:
+            async with asyncio.timeout(CONNECT_TIMEOUT):
+                self._client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    ble_device,
+                    self.mac_address,
+                    disconnected_callback=self._handle_disconnect,
+                )
+        except TimeoutError as exc:
+            self._client = None
+            raise UpdateFailed(
+                f"Timed out after {CONNECT_TIMEOUT}s connecting to {self.mac_address}. "
+                "The controller may be connected to the Spider Farmer app, which "
+                "takes its only BLE connection."
+            ) from exc
+
         await self._client.start_notify(UUID_NOTIFY, self._notification_handler)
         _LOGGER.debug("Spider Farmer GGS: connected and notifications subscribed")
 
@@ -345,6 +421,9 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             )
             self._logged_full_payload = True
 
+        if self._capture is not None:
+            self._capture.append(json_str)
+
         raw = msg.get("data", {})
         if not raw:
             return
@@ -440,7 +519,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         if not alarm:
             return
         if "epoch" in alarm:
-            self.data.alarm_time = _epoch_to_iso(alarm["epoch"])
+            self.data.alarm_time = _epoch_to_dt(alarm["epoch"])
         if "alarmType" in alarm:
             self.data.alarm_type = alarm["alarmType"]
         if "devType" in alarm:
@@ -451,7 +530,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         if not oplog:
             return
         if "epoch" in oplog:
-            self.data.oplog_time = _epoch_to_iso(oplog["epoch"])
+            self.data.oplog_time = _epoch_to_dt(oplog["epoch"])
         if "devType" in oplog:
             self.data.oplog_dev_type = oplog["devType"]
         if "modeType" in oplog:
@@ -517,7 +596,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     def _parse_devices(self, data: dict) -> None:
         # Fan
         fan = data.get("fan", {})
-        if fan:
+        if fan and _is_config_block(fan):
             self.data._fan_config = dict(fan)
         if "on" in fan:
             self.data.fan_on = bool(fan["on"])
@@ -539,7 +618,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
         # Grow light 1
         light = data.get("light", {})
-        if light:
+        if light and _is_config_block(light):
             self.data._light_config = dict(light)
         if "on" in light:
             self.data.light_on = bool(light["on"])
@@ -553,7 +632,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
         # Grow light 2
         light2 = data.get("light2", {})
-        if light2:
+        if light2 and _is_config_block(light2):
             self.data._light2_config = dict(light2)
         level = _get_level(light2)
         if level is not None:
@@ -567,7 +646,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
         # Blower
         blower = data.get("blower", {})
-        if blower:
+        if blower and _is_config_block(blower):
             self.data._blower_config = dict(blower)
         if "on" in blower:
             self.data.blower_on = bool(blower["on"])
@@ -585,7 +664,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
         # Humidifier
         humidifier = data.get("humidifier", {})
-        if humidifier:
+        if humidifier and _is_config_block(humidifier):
             self.data._humidifier_config = dict(humidifier)
         if "on" in humidifier:
             self.data.humidifier_on = bool(humidifier["on"])
@@ -619,6 +698,30 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         await self._ensure_connected()
         payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
         await self._client.write_gatt_char(UUID_WRITE, payload, response=True)
+
+    async def async_probe(self, command: dict, wait: float = 3.0) -> list[dict]:
+        """Send an arbitrary command and return whatever the controller replies.
+
+        Used to discover protocol commands the integration does not implement yet.
+        The controller also pushes unsolicited status every few seconds, so the
+        result can include messages unrelated to this command — check the
+        `method` field of each.
+        """
+        self._capture = []
+        try:
+            await self._send_raw(command)
+            await asyncio.sleep(wait)
+            captured = list(self._capture)
+        finally:
+            self._capture = None
+
+        replies = []
+        for raw in captured:
+            try:
+                replies.append(json.loads(raw))
+            except json.JSONDecodeError:
+                replies.append({"unparsed": raw[:500]})
+        return replies
 
     async def async_send_config_field(self, module: str, config: dict) -> None:
         """Send a setConfigField command to change device mode/settings."""

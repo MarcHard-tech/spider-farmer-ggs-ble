@@ -1,0 +1,8 @@
+[
+  {"method": "getDevSta"},
+  {"method": "getConfigField", "params": {"keyPath": ["device", "light"]}},
+  {"method": "getConfigField", "params": {"keyPath": ["device", "light2"]}},
+  {"method": "getConfigField", "params": {"keyPath": ["device", "fan"]}},
+  {"method": "getConfigField", "params": {"keyPath": ["device", "blower"]}},
+  {"method": "getConfigField", "params": {"keyPath": ["device", "humidifier"]}}
+]

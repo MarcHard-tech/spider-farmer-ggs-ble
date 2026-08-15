@@ -1,3 +1,29 @@
+send_raw_command:
+  name: Send raw command
+  description: >-
+    Diagnostic. Sends an arbitrary JSON command to the controller over BLE and
+    returns whatever it replies. Used to work out protocol commands the
+    integration does not support yet. Writes directly to the device, so a
+    malformed command can change settings - read before you write.
+  fields:
+    command:
+      name: Command
+      description: 'JSON object, e.g. {"method": "getSysSta"}'
+      required: true
+      example: '{"method": "getSysSta"}'
+      selector:
+        text:
+    wait:
+      name: Wait
+      description: Seconds to listen for replies before returning.
+      required: false
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 15
+          step: 1
+
 set_light_mode:
   name: Set Light Mode
   description: Set the mode and settings for a grow light.
