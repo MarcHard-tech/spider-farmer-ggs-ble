@@ -136,9 +136,12 @@ def build_stage(preset: dict, label: str, start: datetime.date,
         if value is not None:
             body[field] = value
 
-    if "light2" not in body:
-        light2 = get_field(existing, "light2")
-        if light2 is not None:
-            body["light2"] = copy.deepcopy(light2)
+    # Deliberately does NOT carry `existing["light2"]` across: the element
+    # actually written to the controller is filtered to
+    # _STAGE_ELEMENT_FIELDS in services.py, which does not include "light2",
+    # and light modules are written separately (services._prepare_stage_lights/
+    # _send_stage_lights) from the raw preset body, never from this built
+    # stage. A light2 carry-over here was unreachable dead code - removed
+    # 2026-08-16.
 
     return body

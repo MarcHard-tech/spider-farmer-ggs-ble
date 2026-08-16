@@ -203,7 +203,7 @@ def _coerce_stage_date(value, field_name: str) -> datetime.date:
 # Light blocks are excluded here on size grounds: the full stage including both
 # light blocks is 977 bytes, over the ~512-byte BLE attribute limit, while the
 # stage without light blocks is 410 bytes. Lights are written separately to
-# ["device","light"]/["device","light2"] by _write_stage_lights.
+# ["device","light"]/["device","light2"] by _prepare_stage_lights/_send_stage_lights.
 _STAGE_ELEMENT_FIELDS = (
     "stageId", "label", "startDate", "endDate", "alarmDate", "color", "target",
 )
@@ -230,12 +230,15 @@ def _check_ack(replies: list[dict], what: str) -> None:
     raise HomeAssistantError(f"{what} was not acknowledged by the controller ({reason}).")
 
 
-async def _write_stage(coordinator, stage_obj: dict) -> None:
-    """Write a stage to the controller as a single array-form setConfigField.
+def _build_stage_command(stage_obj: dict) -> dict:
+    """Build the array-form setConfigField command for a stage, size-checked.
 
     Builds the complete stage element (identity + target, no light blocks - see
-    module docstring above) and sends it as ["plan","stage"] <- [element], the
-    only keyPath proven to actually apply on this device.
+    module docstring above) addressed at ["plan","stage"] <- [element], the
+    only keyPath proven to actually apply on this device. Building and
+    size-checking is split from sending (see _write_stage) so the whole deploy
+    - stage AND lights - can be validated before anything is written; see
+    _prepare_stage_lights for why that matters.
     """
     element = {k: stage_obj[k] for k in _STAGE_ELEMENT_FIELDS if k in stage_obj}
     cmd = {
@@ -248,22 +251,32 @@ async def _write_stage(coordinator, stage_obj: dict) -> None:
             f"Cannot write stage: command is {size} bytes, over the "
             f"{_MAX_COMMAND_BYTES}-byte limit."
         )
+    return cmd
 
+
+async def _write_stage(coordinator, cmd: dict) -> None:
+    """Send an already-built, already size-checked stage setConfigField command."""
     replies = await coordinator.async_probe(cmd, wait=4)
     _check_ack(replies, "Stage write")
 
 
-async def _write_stage_lights(coordinator, preset: dict) -> None:
-    """Apply the preset's light1/light2 blocks to the live light modules.
+async def _prepare_stage_lights(coordinator, preset: dict) -> list[dict]:
+    """Read current light config and build+size-check the merged write commands.
 
-    Writes to ["device","<module>"] REPLACE the module's config, exactly like
-    the stage write above, so the preset's block is never sent alone - it is
-    merged over the module's current config first. Sending a bare block strips
-    the module's other settings; this is how the fan's cycleTime and maxSpeed
-    were lost on 2026-08-16. Raises HomeAssistantError naming the module on any
-    failure - unreadable current config, oversize command, or a missing/failed
-    acknowledgement.
+    Deliberately does not write anything - only reads (side-effect-free) and
+    builds. Deploy is not atomic: once the stage write lands it cannot be
+    undone, so every command - stage AND lights - must be built and
+    size-checked BEFORE any of them are sent. Previously the light command's
+    size check ran after the stage was already written, so an oversized light
+    payload would abort the deploy in the worst order: stage changed, lights
+    not applied, tent left in a mismatched state.
+
+    Returns one entry per light the preset defines:
+    {"module", "write_cmd", "preset_block", "read_cmd"}. Raises
+    HomeAssistantError naming the module if its current config can't be read
+    or the built command is oversize.
     """
+    prepared: list[dict] = []
     for light_key, module in (("light1", "light"), ("light2", "light2")):
         preset_block = preset.get(light_key)
         if not isinstance(preset_block, dict):
@@ -291,8 +304,8 @@ async def _write_stage_lights(coordinator, preset: dict) -> None:
                 break
         if not isinstance(current, dict):
             raise HomeAssistantError(
-                f"Could not read the current config for {module!r} - stage was "
-                "already written, but its lights were not applied."
+                f"Could not read the current config for {module!r} - aborting "
+                "before anything is written."
             )
 
         merged = dict(current)
@@ -306,14 +319,62 @@ async def _write_stage_lights(coordinator, preset: dict) -> None:
         if size > _MAX_COMMAND_BYTES:
             raise HomeAssistantError(
                 f"Cannot write {module!r} lights: command is {size} bytes, over "
-                f"the {_MAX_COMMAND_BYTES}-byte limit. Stage was already written."
+                f"the {_MAX_COMMAND_BYTES}-byte limit - aborting before anything "
+                "is written."
             )
 
-        write_replies = await coordinator.async_probe(write_cmd, wait=4)
+        prepared.append({
+            "module": module,
+            "write_cmd": write_cmd,
+            "preset_block": preset_block,
+            "read_cmd": read_cmd,
+        })
+    return prepared
+
+
+async def _send_stage_lights(coordinator, prepared: list[dict]) -> None:
+    """Send prepared light writes, then read each back to confirm it landed.
+
+    A code=200 ack is not proof a write landed - indexed stage writes returned
+    200 and were silently ignored (see module docstring above). The stage
+    write is read back and compared; this does the same for the light write,
+    which changes the tent's live photoperiod. stage_lib.get_field is used for
+    the comparison because BLE can corrupt key names in what the controller
+    echoes back (see stage.py), so a plain dict.get would false-negative on a
+    write that actually landed.
+    """
+    for item in prepared:
+        module = item["module"]
+        write_replies = await coordinator.async_probe(item["write_cmd"], wait=4)
         try:
             _check_ack(write_replies, f"Light write for {module!r}")
         except HomeAssistantError as exc:
             raise HomeAssistantError(f"{exc} Stage was already written.") from exc
+
+        verify_replies = await coordinator.async_probe(item["read_cmd"], wait=5)
+        verified = None
+        for reply in verify_replies:
+            data = reply.get("data") or {}
+            candidate = data.get(module)
+            if isinstance(candidate, dict) and _is_config_block(candidate):
+                verified = candidate
+                break
+        if verified is None:
+            raise HomeAssistantError(
+                f"Light write for {module!r} was acknowledged, but its config "
+                "could not be read back to confirm. Stage was already written."
+            )
+
+        _MISSING = object()
+        mismatched = [
+            key for key, value in item["preset_block"].items()
+            if stage_lib.get_field(verified, key, _MISSING) != value
+        ]
+        if mismatched:
+            raise HomeAssistantError(
+                f"Light write for {module!r} did not land: {', '.join(mismatched)} "
+                "do not match what was sent. Stage was already written."
+            )
 
 
 async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> dict:
@@ -323,7 +384,7 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
 
     body = plan_storage.get_preset(PLAN_STORAGE_PATH, name)
     if body is None:
-        raise ValueError(f"No preset named {name!r}")
+        raise HomeAssistantError(f"No preset named {name!r}")
 
     start = _coerce_stage_date(call.data.get("start_date"), "start_date")
     end = _coerce_stage_date(call.data.get("end_date"), "end_date")
@@ -332,28 +393,45 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
     if existing is None:
         raise HomeAssistantError("Could not read the current stage from the controller")
 
-    stage_id = stage_lib.get_field(existing, "stageId") or int(
-        datetime.datetime.now().timestamp()
+    # stageId 0 is a legitimate id - `or` would treat it as falsy and
+    # renumber it to a new timestamp on every deploy.
+    existing_stage_id = stage_lib.get_field(existing, "stageId")
+    stage_id = (
+        existing_stage_id if existing_stage_id is not None
+        else int(datetime.datetime.now().timestamp())
     )
     new_stage = stage_lib.build_stage(
         body, name.capitalize(), start, end, stage_id, existing=existing
     )
 
-    await _write_stage(coordinator, new_stage)
+    # Build and size-check EVERYTHING - the stage command and any light
+    # commands - before sending anything. Deploy is not atomic: once the
+    # stage write lands it can't be undone, so an oversized light payload
+    # must abort here, not after the stage has already changed.
+    stage_cmd = _build_stage_command(new_stage)
+    prepared_lights = []
+    if call.data.get("set_lights", True):
+        prepared_lights = await _prepare_stage_lights(coordinator, body)
+
+    await _write_stage(coordinator, stage_cmd)
 
     # Entities cache values, so read the stage back rather than trusting them.
     written = await coordinator.async_read_stage()
     if written is None:
         raise HomeAssistantError("Deployed, but could not read the stage back to confirm")
     check = stage_lib.parse_stage(written)
-    if check["label"] != name.capitalize() or check["start_date"] != start:
+    if (
+        check["label"] != name.capitalize()
+        or check["start_date"] != start
+        or check["end_date"] != end
+    ):
         raise HomeAssistantError(
             f"Stage did not land: controller reports {check['label']!r} "
-            f"starting {check['start_date']}"
+            f"starting {check['start_date']}, ending {check['end_date']}"
         )
 
-    if call.data.get("set_lights", True):
-        await _write_stage_lights(coordinator, body)
+    if prepared_lights:
+        await _send_stage_lights(coordinator, prepared_lights)
 
     if call.data.get("set_device_modes"):
         await _set_plan_following_modes(coordinator)
@@ -369,13 +447,14 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
 async def _set_plan_following_modes(coordinator) -> None:
     """Point the devices at the plan: light to PPFD, air devices to environment.
 
-    _build_config_block falls back to a bare {"modeType": ...} payload when a
-    module's cache is still empty (e.g. before the first full poll). Sending that
-    bare payload as a full config block wipes the module's schedule/cycle settings
-    on the controller - seen happening for real on 2026-08-16. So each block is
-    checked with _is_config_block before it is sent; anything that fails the check
-    is skipped, and the caller is told loudly rather than silently left thinking
-    the tent is following the plan when it is not.
+    async_send_config_field is the single choke point that refuses a bare
+    {"modeType": ...} payload when a module's cache is still empty (e.g. before
+    the first full poll) - sending that as a full config block would wipe the
+    module's schedule/cycle settings on the controller, which really happened
+    to the fan on this device. That guard raises HomeAssistantError; it is
+    caught here per-module so one module's empty cache does not stop the
+    others, and the caller is told loudly which modules were skipped rather
+    than silently left thinking the tent is following the plan when it isn't.
     """
     overrides_by_module = {
         "light": {"modeType": LIGHT_MODES["PPFD"]},
@@ -387,10 +466,10 @@ async def _set_plan_following_modes(coordinator) -> None:
     unsafe_modules = []
     for module, overrides in overrides_by_module.items():
         block = coordinator._build_config_block(module, overrides)
-        if not _is_config_block(block):
+        try:
+            await coordinator.async_send_config_field(module, block)
+        except HomeAssistantError:
             unsafe_modules.append(module)
-            continue
-        await coordinator.async_send_config_field(module, block)
 
     if unsafe_modules:
         raise HomeAssistantError(
@@ -416,9 +495,9 @@ async def async_handle_send_raw_command(
     try:
         command = json.loads(raw) if isinstance(raw, str) else dict(raw)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise ValueError(f"command must be a JSON object: {exc}") from exc
+        raise HomeAssistantError(f"command must be a JSON object: {exc}") from exc
     if not isinstance(command, dict):
-        raise ValueError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
+        raise HomeAssistantError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
 
     wait = float(call.data.get("wait", 3))
     _LOGGER.warning("GGS send_raw_command: %s", json.dumps(command))
@@ -429,6 +508,42 @@ async def async_handle_send_raw_command(
         json.dumps(replies)[:2000],
     )
     return {"count": len(replies), "replies": replies}
+
+
+_REQUIRED_TARGET_SECTIONS = ("dayTime", "temp", "humi", "co2")
+_REQUIRED_TARGET_SUBFIELDS = ("targetDay", "targetNight", "deadband")
+
+
+def _validate_preset_target(body: dict) -> None:
+    """Require a preset's target block to be complete, not merely present.
+
+    The stage array write REPLACES the element, so deploying a preset with an
+    empty or partial target (e.g. {"target": {}}) erases every temperature,
+    humidity and CO2 setpoint on a live tent - and the deploy's read-back only
+    checks label/start/end date, so it would still report success. Catch it
+    here, at save time, instead.
+    """
+    target = body.get("target")
+    if not isinstance(target, dict):
+        raise HomeAssistantError("body.target must be an object")
+
+    missing = [k for k in _REQUIRED_TARGET_SECTIONS if k not in target]
+    for section in ("temp", "humi", "co2"):
+        group = target.get(section)
+        if not isinstance(group, dict):
+            if section not in missing:
+                missing.append(section)
+            continue
+        for sub in _REQUIRED_TARGET_SUBFIELDS:
+            if sub not in group:
+                missing.append(f"{section}.{sub}")
+
+    if missing:
+        raise HomeAssistantError(
+            "body.target is missing required field(s): "
+            f"{', '.join(missing)} - saving would let a deploy erase those "
+            "targets on a live tent"
+        )
 
 
 async def async_handle_manage_presets(hass: HomeAssistant, call: ServiceCall) -> dict:
@@ -448,12 +563,7 @@ async def async_handle_manage_presets(hass: HomeAssistant, call: ServiceCall) ->
                     raise HomeAssistantError(f"body must be valid JSON: {exc}") from exc
             if not isinstance(body, dict):
                 raise HomeAssistantError("body must be a JSON object")
-            if "target" not in body:
-                raise HomeAssistantError(
-                    "body must include a 'target' key - a preset without one "
-                    "would only be caught later, at deploy time, when it could "
-                    "mis-set a live grow tent"
-                )
+            _validate_preset_target(body)
             plan_storage.save_preset(PLAN_STORAGE_PATH, name, body)
         elif action == "delete":
             if not name:

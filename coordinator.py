@@ -14,6 +14,7 @@ from bleak_retry_connector import establish_connection, BleakClientWithServiceCa
 
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import stage as stage_lib
@@ -31,7 +32,21 @@ CONNECT_TIMEOUT = 30
 
 # Commands sent on every poll, overridable at runtime without a restart.
 POLL_COMMANDS_FILE = os.path.join(os.path.dirname(__file__), "poll_commands.json")
-DEFAULT_POLL_COMMANDS = [{"method": "getDevSta"}]
+# The five getConfigField reads are here (not just getDevSta) so that if
+# poll_commands.json is ever missing or invalid, the module config caches used
+# by _build_config_block still get populated from the fallback list. Without
+# them, getDevSta alone never fills the caches (it returns the cut-down
+# runtime view, not a full config block - see _is_config_block), and the
+# first control tap on an unpopulated module would otherwise be the one
+# blocked by async_send_config_field's guard.
+DEFAULT_POLL_COMMANDS = [
+    {"method": "getDevSta"},
+    {"method": "getConfigField", "params": {"keyPath": ["device", "light"]}},
+    {"method": "getConfigField", "params": {"keyPath": ["device", "light2"]}},
+    {"method": "getConfigField", "params": {"keyPath": ["device", "fan"]}},
+    {"method": "getConfigField", "params": {"keyPath": ["device", "blower"]}},
+    {"method": "getConfigField", "params": {"keyPath": ["device", "humidifier"]}},
+]
 
 
 @dataclass
@@ -253,7 +268,19 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             await self._ensure_connected()
             self._poll_count += 1
             for entry in await self._async_poll_commands():
-                every = entry.get("every_n_polls", 1)
+                every_raw = entry.get("every_n_polls", 1)
+                try:
+                    every = int(every_raw)
+                    if every < 1:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "Spider Farmer GGS: invalid every_n_polls %r for poll "
+                        "command %r — treating as 1 (poll_commands.json is "
+                        "runtime-editable and this value must be a positive "
+                        "integer)", every_raw, entry.get("method"),
+                    )
+                    every = 1
                 command = {k: v for k, v in entry.items() if k != "every_n_polls"}
                 if every > 1 and (self._poll_count - 1) % every:
                     continue
@@ -795,7 +822,27 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         return None
 
     async def async_send_config_field(self, module: str, config: dict) -> None:
-        """Send a setConfigField command to change device mode/settings."""
+        """Send a setConfigField command to change device mode/settings.
+
+        This is the single choke point every caller (number/select/time/switch
+        entities and services.py) goes through to write a module's config, and
+        setConfigField REPLACES the module's stored config rather than merging
+        - so `config` must be a full config block, not a bare partial payload.
+        _build_config_block only produces a bare block ({"modeType": N}-style)
+        when the module's cache is still empty (e.g. before the first full
+        poll, or a broken poll_commands.json). Sending that bare block would
+        wipe the module's timePeriod/cycleTime/maxSpeed etc on the controller
+        - this really happened to the fan on this device and had to be
+        restored by hand. Refuse instead.
+        """
+        if not _is_config_block(config):
+            raise HomeAssistantError(
+                f"Refusing to write {module!r}: its cached config has not been "
+                "read from the controller yet, so this would send a bare "
+                "partial payload and wipe the module's schedule/cycle "
+                "settings. Wait for the integration to poll the controller "
+                "(check poll_commands.json if this persists), then retry."
+            )
         payload = {
             "method": "setConfigField",
             "params": {
