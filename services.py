@@ -195,6 +195,53 @@ def _coerce_stage_date(value, field_name: str) -> datetime.date:
     )
 
 
+# Content before identity: if a later write fails, the stage still carries its
+# OLD label and dates, so the grower is not shown a stage name whose settings
+# never landed. See task-17-brief.md for the measured BLE size limits behind
+# this shape - a single whole-stage setConfigField is 860 bytes and gets
+# rejected by BlueZ (BLE caps one GATT attribute at 512 bytes); these piecewise
+# keyPath writes were each probed against the live controller and accepted.
+_STAGE_WRITE_ORDER = ("target", "light1", "light2", "label", "startDate", "endDate")
+_MAX_COMMAND_BYTES = 450
+
+
+async def _write_stage_pieces(coordinator, stage_obj: dict, index: int = 0) -> None:
+    """Write a stage to the controller field-by-field via narrow keyPath writes.
+
+    Raises HomeAssistantError naming the field that failed (oversize or
+    unacknowledged) and listing which fields had already been written
+    successfully, so a partial write is diagnosable rather than silent.
+    """
+    written: list[str] = []
+    for field in _STAGE_WRITE_ORDER:
+        if field not in stage_obj:
+            continue
+        value = stage_obj[field]
+        cmd = {
+            "method": "setConfigField",
+            "params": {"keyPath": ["plan", "stage", index, field], field: value},
+        }
+        size = len(json.dumps(cmd, separators=(",", ":")).encode())
+        if size > _MAX_COMMAND_BYTES:
+            raise HomeAssistantError(
+                f"Cannot write stage field {field!r}: command is {size} bytes, "
+                f"over the {_MAX_COMMAND_BYTES}-byte limit. Already written: "
+                f"{written or 'none'}."
+            )
+
+        replies = await coordinator.async_probe(cmd, wait=4)
+        ack = next(
+            (r for r in replies if r.get("method") == "setConfigField"), None
+        )
+        if ack is None or ack.get("code") != 200:
+            reason = "no matching reply" if ack is None else f"code={ack.get('code')}"
+            raise HomeAssistantError(
+                f"Stage field {field!r} was not acknowledged by the controller "
+                f"({reason}). Already written: {written or 'none'}."
+            )
+        written.append(field)
+
+
 async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> dict:
     """Write a preset to the controller as the active planting stage."""
     coordinator = _get_coordinator(hass)
@@ -218,10 +265,7 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
         body, name.capitalize(), start, end, stage_id, existing=existing
     )
 
-    await coordinator.async_probe({
-        "method": "setConfigField",
-        "params": {"keyPath": ["plan", "stage"], "stage": [new_stage]},
-    }, wait=5)
+    await _write_stage_pieces(coordinator, new_stage, index=0)
 
     # Entities cache values, so read the stage back rather than trusting them.
     written = await coordinator.async_read_stage()
