@@ -5,6 +5,7 @@ imported and unit-tested standalone. Keep it that way.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import difflib
 import re
@@ -108,3 +109,36 @@ def parse_stage(stage_obj: dict) -> dict:
         "co2_night": get_field(co2, "targetNight"),
         "co2_deadband": get_field(co2, "deadband"),
     }
+
+
+def build_stage(preset: dict, label: str, start: datetime.date,
+                end: datetime.date, stage_id: int,
+                existing: dict | None = None) -> dict:
+    """Build a full stage object ready to write to the controller.
+
+    `existing` is the stage currently on the controller. Fields it owns and we
+    have no business inventing — alarmDate, color, and light2 when the preset
+    does not define one — are carried across.
+    """
+    if end < start:
+        raise ValueError(f"end date {end} is before start date {start}")
+
+    body = copy.deepcopy(preset)
+    existing = existing or {}
+
+    body["label"] = label
+    body["stageId"] = stage_id
+    body["startDate"] = pack_date(start)
+    body["endDate"] = pack_date(end)
+
+    for field in ("alarmDate", "color"):
+        value = get_field(existing, field)
+        if value is not None:
+            body[field] = value
+
+    if "light2" not in body:
+        light2 = get_field(existing, "light2")
+        if light2 is not None:
+            body["light2"] = copy.deepcopy(light2)
+
+    return body
