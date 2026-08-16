@@ -310,6 +310,44 @@ async def async_handle_send_raw_command(
     return {"count": len(replies), "replies": replies}
 
 
+async def async_handle_manage_presets(hass: HomeAssistant, call: ServiceCall) -> dict:
+    """List, save or delete stage presets. Always returns the full library."""
+    action = call.data.get("action", "list")
+    name = call.data.get("name")
+
+    def _work() -> dict:
+        if action == "save":
+            if not name:
+                raise HomeAssistantError("name is required to save a preset")
+            body = call.data.get("body")
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except json.JSONDecodeError as exc:
+                    raise HomeAssistantError(f"body must be valid JSON: {exc}") from exc
+            if not isinstance(body, dict):
+                raise HomeAssistantError("body must be a JSON object")
+            if "target" not in body:
+                raise HomeAssistantError(
+                    "body must include a 'target' key - a preset without one "
+                    "would only be caught later, at deploy time, when it could "
+                    "mis-set a live grow tent"
+                )
+            plan_storage.save_preset(PLAN_STORAGE_PATH, name, body)
+        elif action == "delete":
+            if not name:
+                raise HomeAssistantError("name is required to delete a preset")
+            plan_storage.delete_preset(PLAN_STORAGE_PATH, name)
+        elif action != "list":
+            raise HomeAssistantError(f"unknown action {action!r}")
+        return {
+            n: plan_storage.get_preset(PLAN_STORAGE_PATH, n)
+            for n in plan_storage.list_presets(PLAN_STORAGE_PATH)
+        }
+
+    return {"presets": await hass.async_add_executor_job(_work)}
+
+
 def async_register_services(hass: HomeAssistant) -> None:
     """Register all spider_farmer_ggs services."""
     hass.services.async_register(
@@ -332,5 +370,10 @@ def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, "deploy_stage",
         functools.partial(async_handle_deploy_stage, hass),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, "manage_presets",
+        functools.partial(async_handle_manage_presets, hass),
         supports_response=SupportsResponse.ONLY,
     )

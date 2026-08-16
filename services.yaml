@@ -255,3 +255,26 @@ deploy_stage:
       default: false
       selector:
         boolean:
+
+manage_presets:
+  name: Manage stage presets
+  description: List, save or delete planting stage presets. Returns the full library.
+  fields:
+    action:
+      name: Action
+      required: false
+      default: list
+      selector:
+        select:
+          options: [list, save, delete]
+    name:
+      name: Preset name
+      required: false
+      selector:
+        text:
+    body:
+      name: Preset body
+      description: JSON stage body. Required when saving.
+      required: false
+      selector:
+        text:
