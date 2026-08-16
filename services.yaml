@@ -246,6 +246,15 @@ deploy_stage:
       required: true
       selector:
         date:
+    set_lights:
+      name: Set lights
+      description: >-
+        Also apply the preset's light settings to the light modules. This changes
+        the lights' live operating config, not just the stage's stored copy.
+      required: false
+      default: true
+      selector:
+        boolean:
     set_device_modes:
       name: Set device modes
       description: >-

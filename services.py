@@ -195,51 +195,109 @@ def _coerce_stage_date(value, field_name: str) -> datetime.date:
     )
 
 
-# Content before identity: if a later write fails, the stage still carries its
-# OLD label and dates, so the grower is not shown a stage name whose settings
-# never landed. See task-17-brief.md for the measured BLE size limits behind
-# this shape - a single whole-stage setConfigField is 860 bytes and gets
-# rejected by BlueZ (BLE caps one GATT attribute at 512 bytes); these piecewise
-# keyPath writes were each probed against the live controller and accepted.
-_STAGE_WRITE_ORDER = ("target", "light1", "light2", "label", "startDate", "endDate")
-_MAX_COMMAND_BYTES = 450
+# Proven against the live controller 2026-08-16 (see task-18-brief.md):
+# index keyPath writes like ["plan","stage",0,"label"] are acknowledged with
+# code=200 but silently ignored - a 200 is never proof a write landed. Only the
+# array form at ["plan","stage"] actually applies, and it REPLACES the element
+# rather than merging, so every write must carry the complete stage element.
+# Light blocks are excluded here on size grounds: the full stage including both
+# light blocks is 977 bytes, over the ~512-byte BLE attribute limit, while the
+# stage without light blocks is 410 bytes. Lights are written separately to
+# ["device","light"]/["device","light2"] by _write_stage_lights.
+_STAGE_ELEMENT_FIELDS = (
+    "stageId", "label", "startDate", "endDate", "alarmDate", "color", "target",
+)
+_MAX_COMMAND_BYTES = 480
 
 
-async def _write_stage_pieces(coordinator, stage_obj: dict, index: int = 0) -> None:
-    """Write a stage to the controller field-by-field via narrow keyPath writes.
+def _check_ack(replies: list[dict], what: str) -> None:
+    """Raise unless replies contain a setConfigField reply with code == 200.
 
-    Raises HomeAssistantError naming the field that failed (oversize or
-    unacknowledged) and listing which fields had already been written
-    successfully, so a partial write is diagnosable rather than silent.
+    The controller streams unsolicited status messages every few seconds, so
+    async_probe's result can include replies unrelated to the command just
+    sent - position can't be trusted, only a matching method+code can.
     """
-    written: list[str] = []
-    for field in _STAGE_WRITE_ORDER:
-        if field not in stage_obj:
+    ack = next((r for r in replies if r.get("method") == "setConfigField"), None)
+    if ack is None or ack.get("code") != 200:
+        reason = "no matching reply" if ack is None else f"code={ack.get('code')}"
+        raise HomeAssistantError(f"{what} was not acknowledged by the controller ({reason}).")
+
+
+async def _write_stage(coordinator, stage_obj: dict) -> None:
+    """Write a stage to the controller as a single array-form setConfigField.
+
+    Builds the complete stage element (identity + target, no light blocks - see
+    module docstring above) and sends it as ["plan","stage"] <- [element], the
+    only keyPath proven to actually apply on this device.
+    """
+    element = {k: stage_obj[k] for k in _STAGE_ELEMENT_FIELDS if k in stage_obj}
+    cmd = {
+        "method": "setConfigField",
+        "params": {"keyPath": ["plan", "stage"], "stage": [element]},
+    }
+    size = len(json.dumps(cmd, separators=(",", ":")).encode())
+    if size > _MAX_COMMAND_BYTES:
+        raise HomeAssistantError(
+            f"Cannot write stage: command is {size} bytes, over the "
+            f"{_MAX_COMMAND_BYTES}-byte limit."
+        )
+
+    replies = await coordinator.async_probe(cmd, wait=4)
+    _check_ack(replies, "Stage write")
+
+
+async def _write_stage_lights(coordinator, preset: dict) -> None:
+    """Apply the preset's light1/light2 blocks to the live light modules.
+
+    Writes to ["device","<module>"] REPLACE the module's config, exactly like
+    the stage write above, so the preset's block is never sent alone - it is
+    merged over the module's current config first. Sending a bare block strips
+    the module's other settings; this is how the fan's cycleTime and maxSpeed
+    were lost on 2026-08-16. Raises HomeAssistantError naming the module on any
+    failure - unreadable current config, oversize command, or a missing/failed
+    acknowledgement.
+    """
+    for light_key, module in (("light1", "light"), ("light2", "light2")):
+        preset_block = preset.get(light_key)
+        if not isinstance(preset_block, dict):
             continue
-        value = stage_obj[field]
-        cmd = {
-            "method": "setConfigField",
-            "params": {"keyPath": ["plan", "stage", index, field], field: value},
+
+        read_cmd = {
+            "method": "getConfigField",
+            "params": {"keyPath": ["device", module]},
         }
-        size = len(json.dumps(cmd, separators=(",", ":")).encode())
+        read_replies = await coordinator.async_probe(read_cmd, wait=5)
+        current = None
+        for reply in read_replies:
+            data = reply.get("data") or {}
+            if module in data:
+                current = data[module]
+                break
+        if not isinstance(current, dict):
+            raise HomeAssistantError(
+                f"Could not read the current config for {module!r} - stage was "
+                "already written, but its lights were not applied."
+            )
+
+        merged = dict(current)
+        merged.update(preset_block)
+
+        write_cmd = {
+            "method": "setConfigField",
+            "params": {"keyPath": ["device", module], module: merged},
+        }
+        size = len(json.dumps(write_cmd, separators=(",", ":")).encode())
         if size > _MAX_COMMAND_BYTES:
             raise HomeAssistantError(
-                f"Cannot write stage field {field!r}: command is {size} bytes, "
-                f"over the {_MAX_COMMAND_BYTES}-byte limit. Already written: "
-                f"{written or 'none'}."
+                f"Cannot write {module!r} lights: command is {size} bytes, over "
+                f"the {_MAX_COMMAND_BYTES}-byte limit. Stage was already written."
             )
 
-        replies = await coordinator.async_probe(cmd, wait=4)
-        ack = next(
-            (r for r in replies if r.get("method") == "setConfigField"), None
-        )
-        if ack is None or ack.get("code") != 200:
-            reason = "no matching reply" if ack is None else f"code={ack.get('code')}"
-            raise HomeAssistantError(
-                f"Stage field {field!r} was not acknowledged by the controller "
-                f"({reason}). Already written: {written or 'none'}."
-            )
-        written.append(field)
+        write_replies = await coordinator.async_probe(write_cmd, wait=4)
+        try:
+            _check_ack(write_replies, f"Light write for {module!r}")
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(f"{exc} Stage was already written.") from exc
 
 
 async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> dict:
@@ -265,7 +323,7 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
         body, name.capitalize(), start, end, stage_id, existing=existing
     )
 
-    await _write_stage_pieces(coordinator, new_stage, index=0)
+    await _write_stage(coordinator, new_stage)
 
     # Entities cache values, so read the stage back rather than trusting them.
     written = await coordinator.async_read_stage()
@@ -277,6 +335,9 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
             f"Stage did not land: controller reports {check['label']!r} "
             f"starting {check['start_date']}"
         )
+
+    if call.data.get("set_lights", True):
+        await _write_stage_lights(coordinator, body)
 
     if call.data.get("set_device_modes"):
         await _set_plan_following_modes(coordinator)
