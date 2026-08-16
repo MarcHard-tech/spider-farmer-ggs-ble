@@ -215,12 +215,19 @@ def _check_ack(replies: list[dict], what: str) -> None:
 
     The controller streams unsolicited status messages every few seconds, so
     async_probe's result can include replies unrelated to the command just
-    sent - position can't be trusted, only a matching method+code can.
+    sent - position can't be trusted, only a matching method+code can. Success
+    is any reply with method == setConfigField AND code == 200 - checking only
+    the first setConfigField reply would let an unrelated/echoed non-200 reply
+    report a genuinely successful write as a failure.
     """
-    ack = next((r for r in replies if r.get("method") == "setConfigField"), None)
-    if ack is None or ack.get("code") != 200:
-        reason = "no matching reply" if ack is None else f"code={ack.get('code')}"
-        raise HomeAssistantError(f"{what} was not acknowledged by the controller ({reason}).")
+    setconfig_replies = [r for r in replies if r.get("method") == "setConfigField"]
+    if any(r.get("code") == 200 for r in setconfig_replies):
+        return
+    if not setconfig_replies:
+        reason = "no matching reply"
+    else:
+        reason = f"code={setconfig_replies[0].get('code')}"
+    raise HomeAssistantError(f"{what} was not acknowledged by the controller ({reason}).")
 
 
 async def _write_stage(coordinator, stage_obj: dict) -> None:
@@ -266,12 +273,21 @@ async def _write_stage_lights(coordinator, preset: dict) -> None:
             "method": "getConfigField",
             "params": {"keyPath": ["device", module]},
         }
+        # async_probe also returns unsolicited getDevSta pushes, which carry
+        # data[module] as the cut-down runtime view ({"modeType","level",...}),
+        # not the full config. Merging that over the preset block and writing
+        # it would strip mLevel/timePeriod/ppfdPeriod/etc - the same mechanism
+        # that destroyed the fan's cycleTime and maxSpeed on 2026-08-16. So
+        # every reply is checked, and a candidate is only accepted once
+        # _is_config_block confirms it is a real config block, not a runtime
+        # push that merely happens to contain the module key.
         read_replies = await coordinator.async_probe(read_cmd, wait=5)
         current = None
         for reply in read_replies:
             data = reply.get("data") or {}
-            if module in data:
-                current = data[module]
+            candidate = data.get(module)
+            if isinstance(candidate, dict) and _is_config_block(candidate):
+                current = candidate
                 break
         if not isinstance(current, dict):
             raise HomeAssistantError(
