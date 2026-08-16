@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN, FAN_MODES, HUMIDIFIER_MODES, LIGHT_MODES, PLAN_STORAGE_PATH
-from .coordinator import SpiderFarmerGGSCoordinator
+from .coordinator import SpiderFarmerGGSCoordinator, _is_config_block
 from . import plan_storage
 from . import stage as stage_lib
 
@@ -169,6 +169,32 @@ async def async_handle_set_humidifier_mode(hass: HomeAssistant, call: ServiceCal
     await coordinator.async_send_config_field("humidifier", block)
 
 
+def _coerce_stage_date(value, field_name: str) -> datetime.date:
+    """Normalise a service-call date field to a plain date, or raise clearly.
+
+    Accepts a date, a datetime (its .date() is used), or an ISO date string.
+    Anything else - missing, an int, a bad string, etc. - raises HomeAssistantError
+    here instead of failing deep inside stage.py with a confusing TypeError or
+    AttributeError once the value is already being packed for the controller.
+    """
+    if value is None:
+        raise HomeAssistantError(f"{field_name} is required")
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.date.fromisoformat(value)
+        except ValueError as exc:
+            raise HomeAssistantError(
+                f"{field_name} must be an ISO date (YYYY-MM-DD), got {value!r}"
+            ) from exc
+    raise HomeAssistantError(
+        f"{field_name} must be a date, got {type(value).__name__}: {value!r}"
+    )
+
+
 async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> dict:
     """Write a preset to the controller as the active planting stage."""
     coordinator = _get_coordinator(hass)
@@ -178,12 +204,8 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
     if body is None:
         raise ValueError(f"No preset named {name!r}")
 
-    start = call.data["start_date"]
-    end = call.data["end_date"]
-    if isinstance(start, str):
-        start = datetime.date.fromisoformat(start)
-    if isinstance(end, str):
-        end = datetime.date.fromisoformat(end)
+    start = _coerce_stage_date(call.data.get("start_date"), "start_date")
+    end = _coerce_stage_date(call.data.get("end_date"), "end_date")
 
     existing = await coordinator.async_read_stage()
     if existing is None:
@@ -224,16 +246,38 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
 
 
 async def _set_plan_following_modes(coordinator) -> None:
-    """Point the devices at the plan: light to PPFD, air devices to environment."""
-    await coordinator.async_send_config_field(
-        "light", coordinator._build_config_block("light", {"modeType": LIGHT_MODES["PPFD"]})
-    )
-    for module in ("fan", "blower", "humidifier"):
-        await coordinator.async_send_config_field(
-            module,
-            coordinator._build_config_block(
-                module, {"modeType": FAN_MODES["Environment: Temperature & humidity"]}
-            ),
+    """Point the devices at the plan: light to PPFD, air devices to environment.
+
+    _build_config_block falls back to a bare {"modeType": ...} payload when a
+    module's cache is still empty (e.g. before the first full poll). Sending that
+    bare payload as a full config block wipes the module's schedule/cycle settings
+    on the controller - seen happening for real on 2026-08-16. So each block is
+    checked with _is_config_block before it is sent; anything that fails the check
+    is skipped, and the caller is told loudly rather than silently left thinking
+    the tent is following the plan when it is not.
+    """
+    overrides_by_module = {
+        "light": {"modeType": LIGHT_MODES["PPFD"]},
+        "fan": {"modeType": FAN_MODES["Environment: Temperature & humidity"]},
+        "blower": {"modeType": FAN_MODES["Environment: Temperature & humidity"]},
+        "humidifier": {"modeType": FAN_MODES["Environment: Temperature & humidity"]},
+    }
+
+    unsafe_modules = []
+    for module, overrides in overrides_by_module.items():
+        block = coordinator._build_config_block(module, overrides)
+        if not _is_config_block(block):
+            unsafe_modules.append(module)
+            continue
+        await coordinator.async_send_config_field(module, block)
+
+    if unsafe_modules:
+        raise HomeAssistantError(
+            "Stage was deployed, but device modes were NOT set for: "
+            f"{', '.join(unsafe_modules)} — their cached config is not populated "
+            "yet (this happens before the integration's first full poll, or if "
+            "poll_commands.json is missing). Wait for the integration to poll the "
+            "controller, then retry deploy_stage with set_device_modes."
         )
 
 
