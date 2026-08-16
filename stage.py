@@ -32,7 +32,11 @@ def get_field(block: dict, key: str, default=None):
 
     Packet boundaries land mid-key, producing things like "ppfdMaxBrightne? ss"
     or "enableld". Exact match first, then normalised, then a close match.
+    Returns default if block is not a dict.
     """
+    if not isinstance(block, dict):
+        return default
+
     if key in block:
         return block[key]
 
@@ -57,7 +61,30 @@ def _maybe_date(value):
 
 
 def parse_stage(stage_obj: dict) -> dict:
-    """Flatten a controller stage object into plain values."""
+    """Flatten a controller stage object into plain values.
+
+    Returns all 15 keys with None values if stage_obj is not a dict.
+    Never raises on malformed input.
+    """
+    if not isinstance(stage_obj, dict):
+        return {
+            "label": None,
+            "stage_id": None,
+            "start_date": None,
+            "end_date": None,
+            "day_start": None,
+            "day_end": None,
+            "temp_day": None,
+            "temp_night": None,
+            "temp_deadband": None,
+            "humi_day": None,
+            "humi_night": None,
+            "humi_deadband": None,
+            "co2_day": None,
+            "co2_night": None,
+            "co2_deadband": None,
+        }
+
     target = get_field(stage_obj, "target", {}) or {}
     day = get_field(target, "dayTime", {}) or {}
     temp = get_field(target, "temp", {}) or {}
