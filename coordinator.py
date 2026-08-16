@@ -569,7 +569,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             _LOGGER.warning(
                 "GGS: controller holds %d stages; using the first (%s). "
                 "Deploying will replace the list.",
-                len(stages), stages[0].get("label"),
+                len(stages), stage_lib.get_field(stages[0], "label"),
             )
         parsed = stage_lib.parse_stage(stages[0])
         d = self.data
@@ -785,6 +785,12 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             data = reply.get("data") or {}
             stages = data.get("stage")
             if isinstance(stages, list) and stages:
+                if len(stages) > 1:
+                    _LOGGER.warning(
+                        "GGS: controller holds %d stages; using the first (%s). "
+                        "Deploying will replace the list.",
+                        len(stages), stage_lib.get_field(stages[0], "label"),
+                    )
                 return stages[0]
         return None
 
