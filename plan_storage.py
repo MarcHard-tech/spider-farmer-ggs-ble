@@ -34,6 +34,9 @@ def _load(path: str) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         _LOGGER.error("Failed to load preset store %s: %s", path, exc)
         return {"presets": {}}
+    if not isinstance(store, dict):
+        _LOGGER.error("Preset store %s did not contain a JSON object", path)
+        return {"presets": {}}
     store.setdefault("presets", {})
     return store
 
@@ -52,8 +55,9 @@ def seed_defaults(path: str = DEFAULT_PATH) -> None:
     store = _load(path)
     changed = False
     for name, body in _presets.DEFAULT_PRESETS.items():
-        if name not in store["presets"]:
-            store["presets"][name] = json.loads(json.dumps(body))
+        key = name.lower()
+        if key not in store["presets"]:
+            store["presets"][key] = json.loads(json.dumps(body))
             changed = True
     if changed:
         _save(path, store)
