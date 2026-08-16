@@ -340,10 +340,10 @@ async def async_handle_manage_presets(hass: HomeAssistant, call: ServiceCall) ->
             plan_storage.delete_preset(PLAN_STORAGE_PATH, name)
         elif action != "list":
             raise HomeAssistantError(f"unknown action {action!r}")
-        return {
-            n: plan_storage.get_preset(PLAN_STORAGE_PATH, n)
-            for n in plan_storage.list_presets(PLAN_STORAGE_PATH)
-        }
+        # A single consistent read, not list_presets() + get_preset() per name -
+        # the latter re-reads the file each call and can race a concurrent
+        # save/delete, producing a null entry the dashboard would choke on.
+        return plan_storage.list_all(PLAN_STORAGE_PATH)
 
     return {"presets": await hass.async_add_executor_job(_work)}
 

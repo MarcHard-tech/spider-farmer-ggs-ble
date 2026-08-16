@@ -67,6 +67,17 @@ def list_presets(path: str = DEFAULT_PATH) -> list[str]:
     return list(_load(path)["presets"])
 
 
+def list_all(path: str = DEFAULT_PATH) -> dict:
+    """Return the full {name: body} mapping from a single consistent read.
+
+    Unlike calling list_presets() then get_preset() once per name, this loads
+    the store exactly once, so a concurrent save/delete between separate reads
+    can't leave a stale name pointing at a now-missing preset (which would show
+    up as a None value in the result).
+    """
+    return dict(_load(path)["presets"])
+
+
 def get_preset(path: str = DEFAULT_PATH, name: str = "") -> Optional[dict]:
     return _load(path)["presets"].get(name.lower())
 
