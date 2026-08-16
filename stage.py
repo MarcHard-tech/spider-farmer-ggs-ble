@@ -45,3 +45,39 @@ def get_field(block: dict, key: str, default=None):
     if close:
         return block[normalised[close[0]]]
     return default
+
+
+def _maybe_date(value):
+    if not isinstance(value, int) or value <= 0:
+        return None
+    try:
+        return unpack_date(value)
+    except ValueError:
+        return None
+
+
+def parse_stage(stage_obj: dict) -> dict:
+    """Flatten a controller stage object into plain values."""
+    target = get_field(stage_obj, "target", {}) or {}
+    day = get_field(target, "dayTime", {}) or {}
+    temp = get_field(target, "temp", {}) or {}
+    humi = get_field(target, "humi", {}) or {}
+    co2 = get_field(target, "co2", {}) or {}
+
+    return {
+        "label": get_field(stage_obj, "label"),
+        "stage_id": get_field(stage_obj, "stageId"),
+        "start_date": _maybe_date(get_field(stage_obj, "startDate")),
+        "end_date": _maybe_date(get_field(stage_obj, "endDate")),
+        "day_start": get_field(day, "startTime"),
+        "day_end": get_field(day, "endTime"),
+        "temp_day": get_field(temp, "targetDay"),
+        "temp_night": get_field(temp, "targetNight"),
+        "temp_deadband": get_field(temp, "deadband"),
+        "humi_day": get_field(humi, "targetDay"),
+        "humi_night": get_field(humi, "targetNight"),
+        "humi_deadband": get_field(humi, "deadband"),
+        "co2_day": get_field(co2, "targetDay"),
+        "co2_night": get_field(co2, "targetNight"),
+        "co2_deadband": get_field(co2, "deadband"),
+    }
