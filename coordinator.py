@@ -16,6 +16,7 @@ from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from . import stage as stage_lib
 from .const import DOMAIN, UUID_NOTIFY, UUID_WRITE
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,6 +127,22 @@ class GGSData:
     _blower_config: Optional[dict] = field(default=None, repr=False)
     _humidifier_config: Optional[dict] = field(default=None, repr=False)
 
+    # ── Active planting stage (from ["plan","stage"]) ────────────────────────
+    stage_label: Optional[str] = None
+    stage_id: Optional[int] = None
+    stage_start_date: Optional[str] = None   # ISO yyyy-mm-dd
+    stage_end_date: Optional[str] = None
+    stage_raw: Optional[dict] = field(default=None, repr=False)
+    temp_target_day: Optional[int] = None
+    temp_target_night: Optional[int] = None
+    temp_deadband: Optional[int] = None
+    humi_target_day: Optional[int] = None
+    humi_target_night: Optional[int] = None
+    humi_deadband: Optional[int] = None
+    co2_target_day: Optional[int] = None
+    co2_target_night: Optional[int] = None
+    co2_deadband: Optional[int] = None
+
     # ── Light schedule/PPFD settings ─────────────────────────────────────────
     light_schedule_brightness: Optional[int] = None
     light_schedule_start: Optional[int] = None  # seconds since midnight
@@ -226,6 +243,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         self._raw_packets: list[bytes] = []
         self._logged_full_payload = False
         self._capture: Optional[list[str]] = None
+        self._poll_count = 0
         self.data = GGSData()
 
     # ── Coordinator lifecycle ─────────────────────────────────────────────────
@@ -233,7 +251,12 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     async def _async_update_data(self) -> GGSData:
         try:
             await self._ensure_connected()
-            for command in await self._async_poll_commands():
+            self._poll_count += 1
+            for entry in await self._async_poll_commands():
+                every = entry.get("every_n_polls", 1)
+                command = {k: v for k, v in entry.items() if k != "every_n_polls"}
+                if every > 1 and (self._poll_count - 1) % every:
+                    continue
                 await self._send_raw(command)
                 await asyncio.sleep(2)
             return self.data
@@ -434,6 +457,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         self._parse_devices(raw)
         self._parse_alarm(raw)
         self._parse_oplog(raw)
+        self._parse_stage(raw)
 
     # ── Sensor parsing ────────────────────────────────────────────────────────
 
@@ -535,6 +559,34 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             self.data.oplog_dev_type = oplog["devType"]
         if "modeType" in oplog:
             self.data.oplog_mode_type = oplog["modeType"]
+
+    def _parse_stage(self, data: dict) -> None:
+        """Parse a ["plan","stage"] reply. Only the first stage is used."""
+        stages = data.get("stage")
+        if not isinstance(stages, list) or not stages:
+            return
+        if len(stages) > 1:
+            _LOGGER.warning(
+                "GGS: controller holds %d stages; using the first (%s). "
+                "Deploying will replace the list.",
+                len(stages), stages[0].get("label"),
+            )
+        parsed = stage_lib.parse_stage(stages[0])
+        d = self.data
+        d.stage_raw = stages[0]
+        d.stage_label = parsed["label"]
+        d.stage_id = parsed["stage_id"]
+        d.stage_start_date = parsed["start_date"].isoformat() if parsed["start_date"] else None
+        d.stage_end_date = parsed["end_date"].isoformat() if parsed["end_date"] else None
+        d.temp_target_day = parsed["temp_day"]
+        d.temp_target_night = parsed["temp_night"]
+        d.temp_deadband = parsed["temp_deadband"]
+        d.humi_target_day = parsed["humi_day"]
+        d.humi_target_night = parsed["humi_night"]
+        d.humi_deadband = parsed["humi_deadband"]
+        d.co2_target_day = parsed["co2_day"]
+        d.co2_target_night = parsed["co2_night"]
+        d.co2_deadband = parsed["co2_deadband"]
 
     # ── Device parsing ────────────────────────────────────────────────────────
 
@@ -722,6 +774,19 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             except json.JSONDecodeError:
                 replies.append({"unparsed": raw[:500]})
         return replies
+
+    async def async_read_stage(self) -> Optional[dict]:
+        """Read the current stage straight from the controller."""
+        replies = await self.async_probe(
+            {"method": "getConfigField", "params": {"keyPath": ["plan", "stage"]}},
+            wait=5,
+        )
+        for reply in replies:
+            data = reply.get("data") or {}
+            stages = data.get("stage")
+            if isinstance(stages, list) and stages:
+                return stages[0]
+        return None
 
     async def async_send_config_field(self, module: str, config: dict) -> None:
         """Send a setConfigField command to change device mode/settings."""

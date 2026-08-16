@@ -4,5 +4,6 @@
   {"method": "getConfigField", "params": {"keyPath": ["device", "light2"]}},
   {"method": "getConfigField", "params": {"keyPath": ["device", "fan"]}},
   {"method": "getConfigField", "params": {"keyPath": ["device", "blower"]}},
-  {"method": "getConfigField", "params": {"keyPath": ["device", "humidifier"]}}
+  {"method": "getConfigField", "params": {"keyPath": ["device", "humidifier"]}},
+  {"method": "getConfigField", "params": {"keyPath": ["plan", "stage"]}, "every_n_polls": 10}
 ]
