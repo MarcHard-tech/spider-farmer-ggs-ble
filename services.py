@@ -1,16 +1,19 @@
 """Service handlers for Spider Farmer GGS Controller."""
 from __future__ import annotations
 
+import datetime
 import functools
 import json
 import logging
 from datetime import time as dt_time
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 
-from .const import DOMAIN, FAN_MODES, HUMIDIFIER_MODES, LIGHT_MODES
+from .const import DOMAIN, FAN_MODES, HUMIDIFIER_MODES, LIGHT_MODES, PLAN_STORAGE_PATH
 from .coordinator import SpiderFarmerGGSCoordinator
 from . import plan_storage
+from . import stage as stage_lib
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,138 +169,72 @@ async def async_handle_set_humidifier_mode(hass: HomeAssistant, call: ServiceCal
     await coordinator.async_send_config_field("humidifier", block)
 
 
-def _build_plan_data(call_data: dict) -> dict:
-    """Build a plan data dict from service call data."""
-    plan = {"name": call_data["name"]}
-
-    if "day_cycle_start" in call_data:
-        plan["day_cycle"] = {
-            "start": str(call_data["day_cycle_start"]),
-            "end": str(call_data.get("day_cycle_end", "06:00")),
-        }
-
-    for section, fields in [
-        ("temperature", ("temp_day", "temp_night", "temp_dead_zone")),
-        ("humidity", ("humidity_day", "humidity_night", "humidity_dead_zone")),
-        ("co2", ("co2_day", "co2_night", "co2_dead_zone")),
-    ]:
-        day_key, night_key, dz_key = fields
-        if day_key in call_data:
-            plan[section] = {
-                "day": call_data[day_key],
-                "night": call_data.get(night_key, call_data[day_key]),
-                "dead_zone": call_data.get(dz_key, 3),
-            }
-
-    if "light1_ppfd_target" in call_data:
-        plan["light1"] = {
-            "start": str(call_data.get("day_cycle_start", "18:00")),
-            "end": str(call_data.get("day_cycle_end", "06:00")),
-            "ppfd_target": call_data["light1_ppfd_target"],
-            "dimming_min": call_data.get("light1_dimming_min", 10),
-            "dimming_max": call_data.get("light1_dimming_max", 100),
-            "fade_minutes": call_data.get("light1_fade_minutes", 30),
-            "dim_threshold": 0,
-            "off_threshold": 0,
-        }
-
-    if "start_date" in call_data:
-        plan["start_date"] = str(call_data["start_date"])
-    if "end_date" in call_data:
-        plan["end_date"] = str(call_data["end_date"])
-
-    return plan
-
-
-async def async_handle_create_plan(hass: HomeAssistant, call: ServiceCall) -> None:
-    plan_data = _build_plan_data(call.data)
-    plan_storage.save_plan(call.data["name"], plan_data)
-
-
-async def async_handle_update_plan(hass: HomeAssistant, call: ServiceCall) -> None:
-    name = call.data["name"]
-    existing = plan_storage.get_plan(name)
-    if not existing:
-        _LOGGER.error("Plan not found: %s", name)
-        return
-    updates = _build_plan_data(call.data)
-    for key, value in updates.items():
-        if key != "name" and value is not None:
-            if isinstance(existing.get(key), dict) and isinstance(value, dict):
-                existing[key].update(value)
-            else:
-                existing[key] = value
-    plan_storage.save_plan(name, existing)
-
-
-async def async_handle_delete_plan(hass: HomeAssistant, call: ServiceCall) -> None:
-    if not plan_storage.delete_plan(call.data["name"]):
-        _LOGGER.warning("Plan not found: %s", call.data["name"])
-
-
-async def async_handle_activate_plan(hass: HomeAssistant, call: ServiceCall) -> None:
+async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> dict:
+    """Write a preset to the controller as the active planting stage."""
     coordinator = _get_coordinator(hass)
-    name = call.data["name"]
-    plan = plan_storage.get_plan(name)
-    if not plan:
-        _LOGGER.error("Plan not found: %s", name)
-        return
+    name = call.data["preset"]
 
-    # Override dates if provided
-    if "start_date" in call.data:
-        plan["start_date"] = str(call.data["start_date"])
-    if "end_date" in call.data:
-        plan["end_date"] = str(call.data["end_date"])
+    body = plan_storage.get_preset(PLAN_STORAGE_PATH, name)
+    if body is None:
+        raise ValueError(f"No preset named {name!r}")
 
-    # Send light 1 config
-    light1 = plan.get("light1", {})
-    if light1:
-        light_block = coordinator._build_config_block("light", {
-            "modeType": 12,  # PPFD mode
-            "lastAutoModeType": 12,
-            "mOnOff": 1,
-            "ppfdPeriod": [{
-                "enabled": 1,
-                "weekmask": 127,
-                "startTime": _time_to_seconds(light1.get("start", "18:00")),
-                "endTime": _time_to_seconds(light1.get("end", "06:00")),
-                "brightness": light1.get("ppfd_target", 200),
-                "fadeTime": light1.get("fade_minutes", 30) * 60,
-            }],
-            "ppfdMinBrightness": light1.get("dimming_min", 10),
-            "ppfdMaxBrightness": light1.get("dimming_max", 100),
-            "darkTemp": light1.get("dim_threshold", 0),
-            "offTemp": light1.get("off_threshold", 0),
-        })
-        await coordinator.async_send_config_field("light", light_block)
+    start = call.data["start_date"]
+    end = call.data["end_date"]
+    if isinstance(start, str):
+        start = datetime.date.fromisoformat(start)
+    if isinstance(end, str):
+        end = datetime.date.fromisoformat(end)
 
-    # Send light 2 config if present
-    light2 = plan.get("light2", {})
-    if light2:
-        light2_block = coordinator._build_config_block("light2", {
-            "modeType": 12,
-            "lastAutoModeType": 12,
-            "mOnOff": 1,
-            "ppfdPeriod": [{
-                "enabled": 1,
-                "weekmask": 127,
-                "startTime": _time_to_seconds(light2.get("start", "18:00")),
-                "endTime": _time_to_seconds(light2.get("end", "06:00")),
-                "brightness": light2.get("ppfd_target", 200),
-                "fadeTime": light2.get("fade_minutes", 30) * 60,
-            }],
-            "ppfdMinBrightness": light2.get("dimming_min", 10),
-            "ppfdMaxBrightness": light2.get("dimming_max", 100),
-        })
-        await coordinator.async_send_config_field("light2", light2_block)
+    existing = await coordinator.async_read_stage()
+    if existing is None:
+        raise HomeAssistantError("Could not read the current stage from the controller")
 
-    plan_storage.set_active_plan(name)
-    _LOGGER.info("Activated planting plan: %s", name)
+    stage_id = stage_lib.get_field(existing, "stageId") or int(
+        datetime.datetime.now().timestamp()
+    )
+    new_stage = stage_lib.build_stage(
+        body, name.capitalize(), start, end, stage_id, existing=existing
+    )
+
+    await coordinator.async_probe({
+        "method": "setConfigField",
+        "params": {"keyPath": ["plan", "stage"], "stage": [new_stage]},
+    }, wait=5)
+
+    # Entities cache values, so read the stage back rather than trusting them.
+    written = await coordinator.async_read_stage()
+    if written is None:
+        raise HomeAssistantError("Deployed, but could not read the stage back to confirm")
+    check = stage_lib.parse_stage(written)
+    if check["label"] != name.capitalize() or check["start_date"] != start:
+        raise HomeAssistantError(
+            f"Stage did not land: controller reports {check['label']!r} "
+            f"starting {check['start_date']}"
+        )
+
+    if call.data.get("set_device_modes"):
+        await _set_plan_following_modes(coordinator)
+
+    await coordinator.async_request_refresh()
+    return {
+        "label": check["label"],
+        "start_date": check["start_date"].isoformat(),
+        "end_date": check["end_date"].isoformat() if check["end_date"] else None,
+    }
 
 
-async def async_handle_deactivate_plan(hass: HomeAssistant, call: ServiceCall) -> None:
-    plan_storage.set_active_plan(None)
-    _LOGGER.info("Deactivated planting plan")
+async def _set_plan_following_modes(coordinator) -> None:
+    """Point the devices at the plan: light to PPFD, air devices to environment."""
+    await coordinator.async_send_config_field(
+        "light", coordinator._build_config_block("light", {"modeType": LIGHT_MODES["PPFD"]})
+    )
+    for module in ("fan", "blower", "humidifier"):
+        await coordinator.async_send_config_field(
+            module,
+            coordinator._build_config_block(
+                module, {"modeType": FAN_MODES["Environment: Temperature & humidity"]}
+            ),
+        )
 
 
 async def async_handle_send_raw_command(
@@ -349,22 +286,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         functools.partial(async_handle_set_humidifier_mode, hass),
     )
     hass.services.async_register(
-        DOMAIN, "create_plan",
-        functools.partial(async_handle_create_plan, hass),
-    )
-    hass.services.async_register(
-        DOMAIN, "update_plan",
-        functools.partial(async_handle_update_plan, hass),
-    )
-    hass.services.async_register(
-        DOMAIN, "delete_plan",
-        functools.partial(async_handle_delete_plan, hass),
-    )
-    hass.services.async_register(
-        DOMAIN, "activate_plan",
-        functools.partial(async_handle_activate_plan, hass),
-    )
-    hass.services.async_register(
-        DOMAIN, "deactivate_plan",
-        functools.partial(async_handle_deactivate_plan, hass),
+        DOMAIN, "deploy_stage",
+        functools.partial(async_handle_deploy_stage, hass),
+        supports_response=SupportsResponse.ONLY,
     )

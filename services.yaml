@@ -223,182 +223,35 @@ set_humidifier_mode:
           min: 1
           max: 100
 
-create_plan:
-  name: Create Planting Plan
-  description: Create a new planting plan with environment targets and device settings.
+deploy_stage:
+  name: Deploy planting stage
+  description: >-
+    Write a preset to the controller as the active planting stage, with the
+    given dates. Replaces whatever stage is currently on the controller.
   fields:
-    name:
-      name: Plan Name
-      description: Name for this plan (e.g. Seed, Veg, Flower)
+    preset:
+      name: Preset
+      description: Name of a preset from the library.
       required: true
-      selector:
-        text:
-    day_cycle_start:
-      name: Day Cycle Start
-      description: "Light period start time (HH:MM)"
-      required: true
-      selector:
-        time:
-    day_cycle_end:
-      name: Day Cycle End
-      description: "Light period end time (HH:MM)"
-      required: true
-      selector:
-        time:
-    temp_day:
-      name: Day Temperature Target
-      required: true
-      selector:
-        number:
-          min: 10
-          max: 40
-          unit_of_measurement: "°C"
-          step: 0.5
-    temp_night:
-      name: Night Temperature Target
-      required: true
-      selector:
-        number:
-          min: 10
-          max: 40
-          unit_of_measurement: "°C"
-          step: 0.5
-    temp_dead_zone:
-      name: Temperature Dead Zone
-      required: true
-      selector:
-        number:
-          min: 1
-          max: 10
-          unit_of_measurement: "°C"
-          step: 0.5
-    humidity_day:
-      name: Day Humidity Target
-      required: true
-      selector:
-        number:
-          min: 20
-          max: 95
-          unit_of_measurement: "%"
-    humidity_night:
-      name: Night Humidity Target
-      required: true
-      selector:
-        number:
-          min: 20
-          max: 95
-          unit_of_measurement: "%"
-    humidity_dead_zone:
-      name: Humidity Dead Zone
-      required: true
-      selector:
-        number:
-          min: 1
-          max: 20
-          unit_of_measurement: "%"
-    co2_day:
-      name: CO2 Day Target
-      selector:
-        number:
-          min: 0
-          max: 2000
-          unit_of_measurement: ppm
-    co2_night:
-      name: CO2 Night Target
-      selector:
-        number:
-          min: 0
-          max: 2000
-          unit_of_measurement: ppm
-    co2_dead_zone:
-      name: CO2 Dead Zone
-      selector:
-        number:
-          min: 0
-          max: 500
-          unit_of_measurement: ppm
-    light1_ppfd_target:
-      name: Light 1 PPFD Target
-      selector:
-        number:
-          min: 0
-          max: 1000
-          unit_of_measurement: "µmol/m²/s"
-    light1_dimming_min:
-      name: Light 1 Dimming Min
-      selector:
-        number:
-          min: 0
-          max: 100
-          unit_of_measurement: "%"
-    light1_dimming_max:
-      name: Light 1 Dimming Max
-      selector:
-        number:
-          min: 0
-          max: 100
-          unit_of_measurement: "%"
-    light1_fade_minutes:
-      name: Light 1 Fade Time
-      selector:
-        number:
-          min: 0
-          max: 240
-          unit_of_measurement: min
-    start_date:
-      name: Start Date
-      description: Plan start date
-      selector:
-        date:
-    end_date:
-      name: End Date
-      description: Plan end date
-      selector:
-        date:
-
-update_plan:
-  name: Update Planting Plan
-  description: Modify settings on an existing planting plan.
-  fields:
-    name:
-      name: Plan Name
-      description: Name of the plan to update
-      required: true
-      selector:
-        text:
-
-delete_plan:
-  name: Delete Planting Plan
-  description: Remove a saved planting plan.
-  fields:
-    name:
-      name: Plan Name
-      description: Name of the plan to delete
-      required: true
-      selector:
-        text:
-
-activate_plan:
-  name: Activate Planting Plan
-  description: Push a planting plan to the controller and start it.
-  fields:
-    name:
-      name: Plan Name
-      description: Name of the plan to activate
-      required: true
+      example: Seedling
       selector:
         text:
     start_date:
-      name: Start Date
-      description: Override plan start date
+      name: Start date
+      required: true
       selector:
         date:
     end_date:
-      name: End Date
-      description: Override plan end date
+      name: End date
+      required: true
       selector:
         date:
-
-deactivate_plan:
-  name: Deactivate Planting Plan
-  description: Stop the currently active planting plan.
+    set_device_modes:
+      name: Set device modes
+      description: >-
+        Also switch the light to PPFD mode and the fan, blower and humidifier to
+        Environment mode so they follow the stage. Leave off to set them yourself.
+      required: false
+      default: false
+      selector:
+        boolean:

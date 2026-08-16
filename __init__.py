@@ -4,8 +4,9 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_MAC_ADDRESS, DOMAIN
+from .const import CONF_MAC_ADDRESS, DOMAIN, PLAN_STORAGE_PATH
 from .coordinator import SpiderFarmerGGSCoordinator
+from . import plan_storage
 
 PLATFORMS = ["sensor", "switch", "number", "select", "time"]
 
@@ -20,6 +21,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    await hass.async_add_executor_job(plan_storage.seed_defaults, PLAN_STORAGE_PATH)
 
     from .services import async_register_services
     async_register_services(hass)
