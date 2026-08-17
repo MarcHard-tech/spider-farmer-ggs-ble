@@ -245,8 +245,18 @@ def parse_packet(pkt: bytes) -> dict:
     }
 
 
-def build_packets(plaintext: bytes, msg_id: int, max_chunk: int = MAX_CHUNK) -> list[bytes]:
-    """Encrypt and frame a JSON command into packets for characteristic ff02."""
+def build_packets(
+    plaintext: bytes,
+    msg_id: int,
+    max_chunk: int = MAX_CHUNK,
+    version: int = VERSION,
+) -> list[bytes]:
+    """Encrypt and frame a JSON command into packets for characteristic ff02.
+
+    `version` is overridable for diagnostics only. Every packet the controller
+    sends carries 2, and normal sends match that; the override exists to test
+    whether the outbound direction expects a different value.
+    """
     ct = encrypt_message(plaintext)
     total = len(ct)
     packets = []
@@ -255,7 +265,7 @@ def build_packets(plaintext: bytes, msg_id: int, max_chunk: int = MAX_CHUNK) -> 
         header = (
             MAGIC
             + (HEADER_LEN - 8 + len(chunk) + TRAILER_LEN).to_bytes(2, "big")
-            + VERSION.to_bytes(2, "big")
+            + (version & 0xFFFF).to_bytes(2, "big")
             + (msg_id & 0xFFFF).to_bytes(2, "big")
             + total.to_bytes(4, "big")
             + off.to_bytes(4, "big")

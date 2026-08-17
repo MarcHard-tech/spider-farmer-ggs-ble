@@ -13,6 +13,53 @@ send_raw_command:
       example: '{"method": "getSysSta"}'
       selector:
         text:
+    msg_id:
+      name: Message ID
+      description: >-
+        Diagnostic. Override the message id instead of using the incrementing
+        counter. Device-originated ids look random across the full 16-bit range.
+      required: false
+      example: 32717
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    characteristic:
+      name: Write characteristic
+      description: >-
+        Diagnostic. Write to a different GATT characteristic than the default
+        ff02. Use dump_gatt to list what the controller actually exposes.
+      required: false
+      example: '0000ff02-0000-1000-8000-00805f9b34fb'
+      selector:
+        text:
+    write_without_response:
+      name: Write without response
+      description: >-
+        Diagnostic. Use a write-without-response instead of write-with-response.
+      required: false
+      selector:
+        boolean:
+    version:
+      name: Protocol version field
+      description: >-
+        Diagnostic. Override the header's version field. Every packet the
+        controller sends carries 2.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+
+dump_gatt:
+  name: Dump GATT characteristics
+  description: >-
+    Diagnostic, read-only. Lists the controller's GATT services and
+    characteristics with their properties, so the write endpoint can be
+    verified rather than assumed.
     wait:
       name: Wait
       description: Seconds to listen for replies before returning.

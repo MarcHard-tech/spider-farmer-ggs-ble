@@ -500,14 +500,43 @@ async def async_handle_send_raw_command(
         raise HomeAssistantError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
 
     wait = float(call.data.get("wait", 3))
-    _LOGGER.warning("GGS send_raw_command: %s", json.dumps(command))
-    replies = await coordinator.async_probe(command, wait)
+
+    # Transport overrides, diagnostic only. Omitted fields keep the values the
+    # controller's own packets use, so an ordinary call behaves as before.
+    transport = {}
+    if "msg_id" in call.data:
+        transport["msg_id"] = int(call.data["msg_id"]) & 0xFFFF
+    if call.data.get("characteristic"):
+        transport["characteristic"] = str(call.data["characteristic"])
+    if "write_without_response" in call.data:
+        transport["response"] = not bool(call.data["write_without_response"])
+    if "version" in call.data:
+        transport["version"] = int(call.data["version"])
+
+    _LOGGER.warning(
+        "GGS send_raw_command: %s%s",
+        json.dumps(command),
+        f" transport={transport}" if transport else "",
+    )
+    replies = await coordinator.async_probe(command, wait, **transport)
     _LOGGER.warning(
         "GGS send_raw_command got %d repl%s: %s",
         len(replies), "y" if len(replies) == 1 else "ies",
         json.dumps(replies)[:2000],
     )
     return {"count": len(replies), "replies": replies}
+
+
+async def async_handle_dump_gatt(hass: HomeAssistant, call: ServiceCall) -> dict:
+    """Return the controller's GATT characteristics. Read-only."""
+    coordinator = _get_coordinator(hass)
+    found = await coordinator.async_dump_gatt()
+    _LOGGER.warning("GGS dump_gatt: %s", json.dumps(found))
+    writable = [
+        c["characteristic"] for c in found
+        if {"write", "write-without-response"} & set(c["properties"])
+    ]
+    return {"count": len(found), "characteristics": found, "writable": writable}
 
 
 _REQUIRED_TARGET_SECTIONS = ("dayTime", "temp", "humi", "co2")
@@ -584,6 +613,11 @@ def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, "send_raw_command",
         functools.partial(async_handle_send_raw_command, hass),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, "dump_gatt",
+        functools.partial(async_handle_dump_gatt, hass),
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

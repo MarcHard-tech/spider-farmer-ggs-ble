@@ -722,21 +722,54 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
     # ── Device control commands ───────────────────────────────────────────────
 
-    async def _send_raw(self, command: dict) -> None:
+    async def _send_raw(self, command: dict, **transport) -> None:
         """Encrypt, frame and write a JSON command (protocol v2).
 
         A command may span several packets; the controller reassembles them by
         message id, so every packet of one command must share an id and they
         must be written in order.
+
+        The keyword arguments override transport details for diagnostics only
+        and default to what the controller's own packets use. They exist because
+        the controller accepts every write at GATT level and answers none, so
+        the fault is below the command layer and each of these is a suspect.
         """
         await self._ensure_connected()
         payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
-        msg_id = self._next_msg_id
-        self._next_msg_id = (self._next_msg_id + 1) & 0xFFFF or 1
-        for packet in protocol.build_packets(payload, msg_id):
-            await self._client.write_gatt_char(UUID_WRITE, packet, response=True)
 
-    async def async_probe(self, command: dict, wait: float = 3.0) -> list[dict]:
+        msg_id = transport.get("msg_id")
+        if msg_id is None:
+            msg_id = self._next_msg_id
+            self._next_msg_id = (self._next_msg_id + 1) & 0xFFFF or 1
+
+        char = transport.get("characteristic") or UUID_WRITE
+        response = transport.get("response", True)
+        version = transport.get("version", protocol.VERSION)
+
+        packets = protocol.build_packets(payload, msg_id, version=version)
+        for packet in packets:
+            await self._client.write_gatt_char(char, packet, response=response)
+
+    async def async_dump_gatt(self) -> list[dict]:
+        """List the device's GATT characteristics and their properties.
+
+        Diagnostic. The write characteristic was inherited from protocol v1 and
+        never re-verified against the v2 firmware; if the firmware moved it, a
+        write to the old one would be accepted and ignored exactly as observed.
+        """
+        await self._ensure_connected()
+        found = []
+        for service in self._client.services:
+            for char in service.characteristics:
+                found.append({
+                    "service": service.uuid,
+                    "characteristic": char.uuid,
+                    "properties": list(char.properties),
+                    "handle": char.handle,
+                })
+        return found
+
+    async def async_probe(self, command: dict, wait: float = 3.0, **transport) -> list[dict]:
         """Send an arbitrary command and return whatever the controller replies.
 
         Used to discover protocol commands the integration does not implement yet.
@@ -746,7 +779,7 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         """
         self._capture = []
         try:
-            await self._send_raw(command)
+            await self._send_raw(command, **transport)
             await asyncio.sleep(wait)
             captured = list(self._capture)
         finally:
