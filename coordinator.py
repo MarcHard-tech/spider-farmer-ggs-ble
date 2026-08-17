@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from . import protocol
 from . import stage as stage_lib
 from .const import DOMAIN, UUID_NOTIFY, UUID_WRITE
 
@@ -255,7 +256,8 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         )
         self.mac_address = mac_address.upper()
         self._client: Optional[BleakClient] = None
-        self._raw_packets: list[bytes] = []
+        self._reassembler = protocol.Reassembler()
+        self._next_msg_id = 1
         self._logged_full_payload = False
         self._capture: Optional[list[str]] = None
         self._poll_count = 0
@@ -378,84 +380,31 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     # ── BLE notification handling ─────────────────────────────────────────────
 
     def _notification_handler(self, _sender, data: bytearray) -> None:
-        _LOGGER.debug(
-            "Spider Farmer GGS: raw %d bytes hex[0:20]=%s",
-            len(data), data[:20].hex(" "),
-        )
+        """Handle one BLE notification (protocol v2).
 
-        marker = b'{"method":'
-        pos = data.find(marker)
-
-        if 0 <= pos < 30:
-            self._raw_packets = [data[pos:]]
-        elif self._raw_packets:
-            self._raw_packets.append(bytes(data))
-        else:
+        The 2026-08-17 firmware encrypted the payload and chunks it across
+        packets, so a notification is no longer a slice of JSON. Framing, CRC
+        and AES all live in protocol.py; this just feeds the reassembler and
+        hands whole decrypted messages to the existing v1 parser.
+        """
+        try:
+            plaintext = self._reassembler.add(bytes(data))
+        except protocol.ProtocolError as exc:
+            # A bad CRC or stray packet is not fatal - the controller streams
+            # continuously and the next message will be intact.
+            _LOGGER.debug("Spider Farmer GGS: discarding packet (%s)", exc)
             return
 
-        self._try_assemble()
+        if plaintext is None:
+            return  # message still incomplete
 
-    def _try_assemble(self) -> None:
-        if not self._raw_packets:
-            return
-
-        base = "".join(chr(b) for b in self._raw_packets[0] if 32 <= b <= 126)
-
-        if len(self._raw_packets) < 2:
-            depth = 0
-            for ch in base:
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        self._raw_packets.clear()
-                        self._parse_payload(base)
-                        return
-            if len(base) > 4000:
-                self._raw_packets.clear()
-            return
-
-        for strip_len in range(0, 35):
-            parts = [base]
-            for pkt in self._raw_packets[1:]:
-                trimmed = pkt[strip_len:] if strip_len < len(pkt) else b""
-                parts.append(
-                    "".join(chr(b) for b in trimmed if 32 <= b <= 126)
-                )
-            combined = "".join(parts)
-
-            depth = 0
-            end = -1
-            for i, ch in enumerate(combined):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i + 1
-                        break
-
-            if end < 0:
-                continue
-
-            candidate = combined[:end]
-            try:
-                json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-
-            _LOGGER.debug(
-                "Spider Farmer GGS: assembled %d bytes, continuation strip=%d",
-                len(candidate), strip_len,
+        try:
+            self._parse_payload(plaintext.decode("utf-8"))
+        except UnicodeDecodeError:
+            _LOGGER.warning(
+                "Spider Farmer GGS: decrypted message was not valid UTF-8 (%d bytes)",
+                len(plaintext),
             )
-            self._raw_packets.clear()
-            self._parse_payload(candidate)
-            return
-
-        if sum(len(p) for p in self._raw_packets) > 4000:
-            _LOGGER.debug("Spider Farmer GGS: clearing oversized raw buffer")
-            self._raw_packets.clear()
 
     def _parse_payload(self, json_str: str) -> None:
         try:
@@ -774,9 +723,18 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
     # ── Device control commands ───────────────────────────────────────────────
 
     async def _send_raw(self, command: dict) -> None:
+        """Encrypt, frame and write a JSON command (protocol v2).
+
+        A command may span several packets; the controller reassembles them by
+        message id, so every packet of one command must share an id and they
+        must be written in order.
+        """
         await self._ensure_connected()
         payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
-        await self._client.write_gatt_char(UUID_WRITE, payload, response=True)
+        msg_id = self._next_msg_id
+        self._next_msg_id = (self._next_msg_id + 1) & 0xFFFF or 1
+        for packet in protocol.build_packets(payload, msg_id):
+            await self._client.write_gatt_char(UUID_WRITE, packet, response=True)
 
     async def async_probe(self, command: dict, wait: float = 3.0) -> list[dict]:
         """Send an arbitrary command and return whatever the controller replies.
