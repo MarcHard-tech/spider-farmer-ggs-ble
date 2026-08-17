@@ -55,7 +55,10 @@ FAN_ENV_SUBMODES = {
 HUMIDIFIER_MODE_MANUAL = 0
 HUMIDIFIER_MODE_TIMESLOT = 1
 HUMIDIFIER_MODE_CYCLE = 2
-HUMIDIFIER_MODE_HUMIDITY = None  # TODO: Replace with discovered value from Task 0
+# Confirmed 2026-08-17: the controller reported modeType 4 while the Spider Farmer
+# app showed the humidifier in "Humidity only" mode. Until this was filled in it was
+# None, so HUMIDIFIER_MODES_REV dropped it and select.humidifier_mode read unavailable.
+HUMIDIFIER_MODE_HUMIDITY = 4
 
 HUMIDIFIER_MODES = {
     "Manual": HUMIDIFIER_MODE_MANUAL,
