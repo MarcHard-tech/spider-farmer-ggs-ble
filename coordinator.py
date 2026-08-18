@@ -735,6 +735,22 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         the fault is below the command layer and each of these is a suspect.
         """
         await self._ensure_connected()
+
+        char = transport.get("characteristic") or UUID_WRITE
+        response = transport.get("response", True)
+
+        # Diagnostic: write bytes exactly as given, bypassing encrypt and framing.
+        # Used to replay a frame captured from the vendor app, which distinguishes
+        # a content problem from a transport one.
+        raw = transport.get("raw_bytes")
+        if raw is not None:
+            _LOGGER.warning(
+                "Spider Farmer GGS: raw write, %d bytes, mtu=%s",
+                len(raw), getattr(self._client, "mtu_size", "?"),
+            )
+            await self._client.write_gatt_char(char, raw, response=response)
+            return
+
         payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
 
         msg_id = transport.get("msg_id")
@@ -742,11 +758,15 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             msg_id = self._next_msg_id
             self._next_msg_id = (self._next_msg_id + 1) & 0xFFFF or 1
 
-        char = transport.get("characteristic") or UUID_WRITE
-        response = transport.get("response", True)
         version = transport.get("version", protocol.VERSION)
+        max_chunk = transport.get("max_chunk", protocol.MAX_CHUNK)
 
-        packets = protocol.build_packets(payload, msg_id, version=version)
+        packets = protocol.build_packets(payload, msg_id, max_chunk, version=version)
+        _LOGGER.warning(
+            "Spider Farmer GGS: writing %d packet(s), %s bytes, mtu=%s",
+            len(packets), [len(p) for p in packets],
+            getattr(self._client, "mtu_size", "?"),
+        )
         for packet in packets:
             await self._client.write_gatt_char(char, packet, response=response)
 
@@ -767,7 +787,15 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
                     "properties": list(char.properties),
                     "handle": char.handle,
                 })
-        return found
+        mtu = getattr(self._client, "mtu_size", None)
+        return {
+            "mtu_size": mtu,
+            # An ATT Write Request carries at most MTU-3 bytes. Above that BlueZ
+            # falls back to a Prepare/Execute long write, which simple firmware
+            # often does not implement - a candidate cause of ignored writes.
+            "max_single_write": (mtu - 3) if mtu else None,
+            "characteristics": found,
+        }
 
     async def async_probe(self, command: dict, wait: float = 3.0, **transport) -> list[dict]:
         """Send an arbitrary command and return whatever the controller replies.

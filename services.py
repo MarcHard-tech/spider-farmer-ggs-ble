@@ -491,19 +491,35 @@ async def async_handle_send_raw_command(
     change settings — read before writing.
     """
     coordinator = _get_coordinator(hass)
-    raw = call.data["command"]
-    try:
-        command = json.loads(raw) if isinstance(raw, str) else dict(raw)
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise HomeAssistantError(f"command must be a JSON object: {exc}") from exc
-    if not isinstance(command, dict):
-        raise HomeAssistantError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
+
+    # raw_hex replaces command entirely: the bytes go to the characteristic
+    # untouched, so a frame captured from the vendor app can be replayed exactly.
+    raw_hex = call.data.get("raw_hex")
+    command = {}
+    raw_bytes = None
+    if raw_hex:
+        try:
+            raw_bytes = bytes.fromhex("".join(str(raw_hex).split()))
+        except ValueError as exc:
+            raise HomeAssistantError(f"raw_hex must be hex: {exc}") from exc
+    else:
+        raw = call.data["command"]
+        try:
+            command = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise HomeAssistantError(f"command must be a JSON object: {exc}") from exc
+        if not isinstance(command, dict):
+            raise HomeAssistantError("command must be a JSON object, e.g. {\"method\": \"getSysSta\"}")
 
     wait = float(call.data.get("wait", 3))
 
     # Transport overrides, diagnostic only. Omitted fields keep the values the
     # controller's own packets use, so an ordinary call behaves as before.
     transport = {}
+    if raw_bytes is not None:
+        transport["raw_bytes"] = raw_bytes
+    if "max_chunk" in call.data:
+        transport["max_chunk"] = int(call.data["max_chunk"])
     if "msg_id" in call.data:
         transport["msg_id"] = int(call.data["msg_id"]) & 0xFFFF
     if call.data.get("characteristic"):
@@ -515,8 +531,9 @@ async def async_handle_send_raw_command(
 
     _LOGGER.warning(
         "GGS send_raw_command: %s%s",
-        json.dumps(command),
-        f" transport={transport}" if transport else "",
+        raw_bytes.hex() if raw_bytes is not None else json.dumps(command),
+        f" transport={ {k: v for k, v in transport.items() if k != 'raw_bytes'} }"
+        if transport else "",
     )
     replies = await coordinator.async_probe(command, wait, **transport)
     _LOGGER.warning(
@@ -530,13 +547,15 @@ async def async_handle_send_raw_command(
 async def async_handle_dump_gatt(hass: HomeAssistant, call: ServiceCall) -> dict:
     """Return the controller's GATT characteristics. Read-only."""
     coordinator = _get_coordinator(hass)
-    found = await coordinator.async_dump_gatt()
-    _LOGGER.warning("GGS dump_gatt: %s", json.dumps(found))
-    writable = [
-        c["characteristic"] for c in found
+    info = await coordinator.async_dump_gatt()
+    _LOGGER.warning("GGS dump_gatt: %s", json.dumps(info))
+    chars = info["characteristics"]
+    info["writable"] = [
+        c["characteristic"] for c in chars
         if {"write", "write-without-response"} & set(c["properties"])
     ]
-    return {"count": len(found), "characteristics": found, "writable": writable}
+    info["count"] = len(chars)
+    return info
 
 
 _REQUIRED_TARGET_SECTIONS = ("dayTime", "temp", "humi", "co2")

@@ -9,10 +9,34 @@ send_raw_command:
     command:
       name: Command
       description: 'JSON object, e.g. {"method": "getSysSta"}'
-      required: true
+      required: false
       example: '{"method": "getSysSta"}'
       selector:
         text:
+    raw_hex:
+      name: Raw frame hex
+      description: >-
+        Diagnostic. Write these bytes verbatim, skipping JSON encoding, encryption
+        and framing entirely. Replaces command. Used to replay a frame captured
+        from the vendor app, which separates a content fault from a transport one.
+      required: false
+      example: 'aaaa0003014e0002a25c...'
+      selector:
+        text:
+          multiline: true
+    max_chunk:
+      name: Max ciphertext bytes per packet
+      description: >-
+        Diagnostic. Split the encrypted command across several packets, each with
+        its own header and CRC, mirroring how the controller chunks its own
+        messages. Defaults to 400.
+      required: false
+      example: 180
+      selector:
+        number:
+          min: 16
+          max: 400
+          mode: box
     msg_id:
       name: Message ID
       description: >-
