@@ -200,14 +200,28 @@ def _coerce_stage_date(value, field_name: str) -> datetime.date:
 # code=200 but silently ignored - a 200 is never proof a write landed. Only the
 # array form at ["plan","stage"] actually applies, and it REPLACES the element
 # rather than merging, so every write must carry the complete stage element.
-# Light blocks are excluded here on size grounds: the full stage including both
-# light blocks is 977 bytes, over the ~512-byte BLE attribute limit, while the
-# stage without light blocks is 410 bytes. Lights are written separately to
-# ["device","light"]/["device","light2"] by _prepare_stage_lights/_send_stage_lights.
+# light1 is included: without it the vendor app shows a grey screen when you
+# open the plan's light settings, confirmed on this device 2026-08-18.
+#
+# It used to be excluded on size grounds - the stage with light blocks is ~570
+# bytes, over the ~512-byte BLE attribute limit that applied under protocol v1,
+# where a command had to fit one write. Protocol v2 chunks a command across as
+# many packets as it needs, and the controller reassembles them: verified by
+# writing this very stage as a multi-chunk command and getting code:200 back,
+# with the light block confirmed stored afterwards.
+#
+# light2 stays out: this controller has no second light, so a stage element
+# carrying one has never been observed and would be guesswork. Lights are also
+# still written to ["device","light"] by _prepare_stage_lights/_send_stage_lights
+# - that sets how the light actually operates, which is separate from the
+# stage's stored copy of the settings.
 _STAGE_ELEMENT_FIELDS = (
     "stageId", "label", "startDate", "endDate", "alarmDate", "color", "target",
+    "light1",
 )
-_MAX_COMMAND_BYTES = 480
+# A sanity ceiling, not a transport limit: v2 chunks anything larger. Kept so a
+# runaway payload is refused before it reaches a tent rather than after.
+_MAX_COMMAND_BYTES = 4096
 
 
 def _check_ack(replies: list[dict], what: str) -> None:
