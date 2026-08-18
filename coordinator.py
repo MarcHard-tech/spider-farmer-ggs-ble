@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -257,7 +258,9 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
         self.mac_address = mac_address.upper()
         self._client: Optional[BleakClient] = None
         self._reassembler = protocol.Reassembler()
-        self._next_msg_id = 1
+        # Learned from the controller's own messages, which all carry both.
+        self._pid: Optional[str] = None
+        self._uid: Optional[str] = None
         self._logged_full_payload = False
         self._capture: Optional[list[str]] = None
         self._poll_count = 0
@@ -422,6 +425,13 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
         if self._capture is not None:
             self._capture.append(json_str)
+
+        # Learn the identifiers the controller expects echoed back on commands.
+        # Every message it sends carries both, so this needs no configuration.
+        if msg.get("pid"):
+            self._pid = msg["pid"]
+        if msg.get("uid"):
+            self._uid = msg["uid"]
 
         raw = msg.get("data", {})
         if not raw:
@@ -722,6 +732,25 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
 
     # ── Device control commands ───────────────────────────────────────────────
 
+    def _envelope(self, command: dict) -> dict:
+        """Wrap a command in the identifiers the controller requires.
+
+        Key order is copied from the vendor app and preserved deliberately:
+        method, pid, params, msgId, uid. `msgId` is a millisecond-epoch string
+        which the controller echoes back, letting a reply be matched to its
+        request.
+        """
+        out = {"method": command.get("method")}
+        if self._pid:
+            out["pid"] = self._pid
+        for key, value in command.items():
+            if key != "method":
+                out[key] = value
+        out["msgId"] = str(int(time.time() * 1000))
+        if self._uid:
+            out["uid"] = self._uid
+        return out
+
     async def _send_raw(self, command: dict, **transport) -> None:
         """Encrypt, frame and write a JSON command (protocol v2).
 
@@ -751,13 +780,13 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             await self._client.write_gatt_char(char, raw, response=response)
             return
 
-        payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
+        payload = json.dumps(
+            self._envelope(command), separators=(",", ":")
+        ).encode("utf-8")
 
+        # None means "compute the header CRC", which is what the controller
+        # requires. Only the diagnostic override supplies a value.
         msg_id = transport.get("msg_id")
-        if msg_id is None:
-            msg_id = self._next_msg_id
-            self._next_msg_id = (self._next_msg_id + 1) & 0xFFFF or 1
-
         version = transport.get("version", protocol.VERSION)
         max_chunk = transport.get("max_chunk", protocol.MAX_CHUNK)
 

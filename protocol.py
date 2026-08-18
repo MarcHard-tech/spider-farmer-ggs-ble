@@ -247,17 +247,28 @@ def parse_packet(pkt: bytes) -> dict:
 
 def build_packets(
     plaintext: bytes,
-    msg_id: int,
+    msg_id: Optional[int] = None,
     max_chunk: int = MAX_CHUNK,
     version: int = VERSION,
 ) -> list[bytes]:
     """Encrypt and frame a JSON command into packets for characteristic ff02.
 
-    `version` is overridable for diagnostics only. Every packet the controller
-    sends carries 2, and normal sends match that; the override exists to test
-    whether the outbound direction expects a different value.
+    Header bytes 8-9 are NOT a message id, despite looking like one. They are a
+    CRC16/MODBUS over the whole message ciphertext, and the controller silently
+    discards any frame where they do not match - which is why every command the
+    integration generated was ignored while byte-exact replays of the vendor
+    app's frames worked. Verified on all 152 messages of a device capture and on
+    both captured app writes, with no exceptions.
+
+    Leave `msg_id` as None so it is computed. Passing a value is for diagnostics
+    only and will produce a frame the controller drops.
+
+    `version` is likewise overridable for diagnostics only; every packet the
+    controller sends carries 2.
     """
     ct = encrypt_message(plaintext)
+    if msg_id is None:
+        msg_id = crc16_modbus(ct)
     total = len(ct)
     packets = []
     for off in range(0, total, max_chunk):
