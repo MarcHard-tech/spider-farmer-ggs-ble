@@ -928,6 +928,47 @@ class SpiderFarmerGGSCoordinator(DataUpdateCoordinator[GGSData]):
             block = dict(overrides)
         return block
 
+    # Modules whose manual on/off and level live in a config block. The heater is
+    # absent: this controller has none, so its config block has never been seen
+    # and its field names are unverified.
+    _MANUAL_MODULES = ("light", "light2", "fan", "blower", "humidifier")
+
+    async def async_set_module_manual(
+        self, module: str, on: Optional[bool] = None, level: Optional[int] = None
+    ) -> None:
+        """Persistently set a module's manual switch and level.
+
+        The v1 `setFan`/`setLight` commands are still acknowledged with code:200
+        but the controller reverts them within ~30-40s, and they can briefly
+        perturb the module's stored mode on the way through. Writing the config
+        block instead makes the change stick.
+
+        Note this sets the MANUAL values only and deliberately leaves modeType
+        alone. While a module is in an automatic mode (PPFD, schedule, cycle,
+        environment) that mode still governs the actual output - switching to
+        Manual is the user's decision to make through the mode select, not a
+        side effect of moving a slider.
+        """
+        if module not in self._MANUAL_MODULES:
+            raise HomeAssistantError(f"{module!r} has no known config block")
+
+        # Re-read first: the cached block is what gets written back, so a stale
+        # one would silently revert whatever changed since the last poll -
+        # including modeType, which would knock a light out of PPFD mode.
+        await self.async_probe(
+            {"method": "getConfigField", "params": {"keyPath": ["device", module]}},
+            wait=4,
+        )
+
+        overrides: dict = {}
+        if on is not None:
+            overrides["mOnOff"] = 1 if on else 0
+        if level is not None:
+            overrides["mLevel"] = int(level)
+        await self.async_send_config_field(
+            module, self._build_config_block(module, overrides)
+        )
+
     async def async_set_fan(self, on: bool, level: Optional[int] = None) -> None:
         cmd: dict = {"on": 1 if on else 0}
         if level is not None:

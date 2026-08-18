@@ -107,7 +107,7 @@ NUMBER_DESCRIPTIONS: tuple[GGSNumberDescription, ...] = (
         native_step=1,
         value_fn=lambda d: d.fan_level,
         # Speed 0 = off, 1–10 = on at that speed
-        set_fn=lambda c, v: c.async_set_fan(v > 0, int(v)),
+        set_fn=lambda c, v: c.async_set_module_manual("fan", v > 0, int(v)),
     ),
     GGSNumberDescription(
         key="light_level",
@@ -118,7 +118,7 @@ NUMBER_DESCRIPTIONS: tuple[GGSNumberDescription, ...] = (
         native_step=1,
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda d: d.light_level,
-        set_fn=lambda c, v: c.async_set_light(v > 0, int(v)),
+        set_fn=lambda c, v: c.async_set_module_manual("light", v > 0, int(v)),
     ),
     GGSNumberDescription(
         key="blower_level",
@@ -129,7 +129,7 @@ NUMBER_DESCRIPTIONS: tuple[GGSNumberDescription, ...] = (
         native_step=1,
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda d: d.blower_level,
-        set_fn=lambda c, v: c.async_set_blower(v > 0, int(v)),
+        set_fn=lambda c, v: c.async_set_module_manual("blower", v > 0, int(v)),
     ),
     GGSNumberDescription(
         key="light2_level",
@@ -140,7 +140,7 @@ NUMBER_DESCRIPTIONS: tuple[GGSNumberDescription, ...] = (
         native_step=1,
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda d: d.light2_level,
-        set_fn=lambda c, v: c.async_set_light2(v > 0, int(v)),
+        set_fn=lambda c, v: c.async_set_module_manual("light2", v > 0, int(v)),
     ),
     # ── Optional devices (unavailable if device doesn't report them) ──────────
     GGSNumberDescription(
@@ -152,7 +152,7 @@ NUMBER_DESCRIPTIONS: tuple[GGSNumberDescription, ...] = (
         native_step=1,
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda d: d.humidifier_level,
-        set_fn=lambda c, v: c.async_set_humidifier(v > 0, int(v)),
+        set_fn=lambda c, v: c.async_set_module_manual("humidifier", v > 0, int(v)),
     ),
     GGSNumberDescription(
         key="heater_level",
