@@ -1,10 +1,12 @@
 {
   "domain": "spider_farmer_ggs",
   "name": "Spider Farmer GGS Controller",
-  "version": "1.0.0",
-  "documentation": "https://github.com/cr0ssn0tice/Spider-Farmer-GGS-Controller-MQTT",
+  "version": "2.0.0",
+  "documentation": "https://github.com/MarcHard-tech/spider-farmer-ggs-ble",
   "requirements": [],
-  "dependencies": ["bluetooth"],
+  "dependencies": [
+    "bluetooth"
+  ],
   "codeowners": [],
   "iot_class": "local_push",
   "config_flow": true,
@@ -14,10 +16,14 @@
     },
     {
       "manufacturer_id": 65535,
-      "manufacturer_data_start": [236, 3]
+      "manufacturer_data_start": [
+        236,
+        3
+      ]
     },
     {
       "local_name": "SF-GGS-CB"
     }
-  ]
+  ],
+  "issue_tracker": "https://github.com/MarcHard-tech/spider-farmer-ggs-ble/issues"
 }

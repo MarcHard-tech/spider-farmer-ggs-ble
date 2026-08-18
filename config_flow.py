@@ -71,9 +71,13 @@ class SpiderFarmerGGSConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_MAC_ADDRESS, default="A8:46:74:A7:BC:5A"
-                    ): str,
+                    # No default: this must be the installer's own controller.
+                    # It previously defaulted to the developer's device address,
+                    # which both leaked that address and pre-filled a value that
+                    # is wrong for everyone else. Find yours under
+                    # Settings > Devices & Services > Bluetooth; it appears as
+                    # "SF-GGS-CB".
+                    vol.Required(CONF_MAC_ADDRESS): str,
                 }
             ),
             errors=errors,

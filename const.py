@@ -73,4 +73,4 @@ HUMIDIFIER_MODES_REV = {v: k for k, v in HUMIDIFIER_MODES.items() if v is not No
 HUMIDIFIER_STRENGTHS = ["Automatic", "1", "2", "3", "4"]
 
 # ── Plan storage path ────────────────────────────────────────────────────────
-PLAN_STORAGE_PATH = "/config/claude_files/ggs_planting_plans.json"
+PLAN_STORAGE_PATH = "/config/spider_farmer_ggs/presets.json"

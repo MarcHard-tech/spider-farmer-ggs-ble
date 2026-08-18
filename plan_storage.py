@@ -22,7 +22,7 @@ except ImportError:
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_PATH = "/config/claude_files/ggs_planting_plans.json"
+DEFAULT_PATH = "/config/spider_farmer_ggs/presets.json"
 
 
 def _load(path: str) -> dict:

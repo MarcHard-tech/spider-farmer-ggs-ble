@@ -14,7 +14,7 @@
       }
     },
     "error": {
-      "invalid_mac": "Invalid format. Use XX:XX:XX:XX:XX:XX (e.g. A8:46:74:A7:BC:5A)"
+      "invalid_mac": "Invalid format. Use XX:XX:XX:XX:XX:XX (e.g. AA:BB:CC:DD:EE:FF)"
     },
     "abort": {
       "already_configured": "This GGS controller is already configured."
