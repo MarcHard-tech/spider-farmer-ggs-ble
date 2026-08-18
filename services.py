@@ -414,11 +414,15 @@ async def async_handle_deploy_stage(hass: HomeAssistant, call: ServiceCall) -> d
         existing_stage_id if existing_stage_id is not None
         else int(datetime.datetime.now().timestamp())
     )
-    # Preset names are the grower's to choose, so a name they typed is used
-    # exactly as typed. capitalize() used to lowercase everything after the
-    # first letter, which turned "Hardening Off" into "Hardening off" and would
-    # mangle any custom name. The seeded presets are stored lowercase, so those
-    # are title-cased rather than deploying a stage labelled "germination".
+    # capitalize() lowercased everything after the first letter, so "hardening
+    # off" deployed as "Hardening off". Title-case each word instead.
+    #
+    # plan_storage keys presets by name.lower() for case-insensitive lookup, so
+    # stored names are always lowercase and the verbatim branch below never
+    # fires today. It is kept as the correct behaviour if storage ever preserves
+    # case: a name the grower typed should win over any reformatting. The one
+    # thing title-casing cannot round-trip is deliberate inner capitals - "pH
+    # stage" becomes "Ph Stage".
     label = name if any(c.isupper() for c in name) else name.title()
     new_stage = stage_lib.build_stage(
         body, label, start, end, stage_id, existing=existing
